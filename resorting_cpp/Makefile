@@ -1,7 +1,6 @@
 CC=c++
-INCLUDE=-I../extern/pybind11/include -Iinclude -I../extern/eigen $(shell python3-config --includes)
+INCLUDE=-I../extern/pybind11/include -Iinclude -I../extern/eigen -I../extern/spdlog/include $(shell python3-config --includes)
 CXXFLAGS=-O3 -Wall -shared -std=c++17 -fPIC $(INCLUDE)
-PLATFORM:=$(word 2,$(MAKECMDGOALS))
 
 TARGET_DIR=../
 SRC_DIR	:= src
