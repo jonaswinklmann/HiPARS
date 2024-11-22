@@ -31,9 +31,9 @@ class Sorting:
         @param comp_zone_col_range Tuple (start,end) of start(inclusive) and end(exclusive) of columns in computational zone
         @return list[Move]|None A list of moves to sort array or None if sorting has failed. 
         A move contains .distance, .init_dir, and .sites_list, which is a list of coordinate pairs to traverse"""
-        if not type(state_array) is np.ndarray:
+        if not isinstance(state_array, np.ndarray):
             raise TypeError("state_array must be numpy bool array")
-        if not state_array.dtype == np.bool:
+        if not state_array.dtype == bool:
             raise TypeError("state_array must be dtype bool")
         return resorting_cpp.sortSequentiallyByRow(state_array, *comp_zone_row_range, *comp_zone_col_range)
     
@@ -45,9 +45,9 @@ class Sorting:
         @return list[ParallelMove]|None A list of moves to sort array or None if sorting has failed. 
         A ParallelMove contains .steps, which is a list of ParallelMoveStep objects, 
         each containing .colSelection and .rowSelection, which are lists of doubles"""
-        if not type(state_array) is np.ndarray:
+        if not isinstance(state_array, np.ndarray):
             raise TypeError("state_array must be numpy bool array")
-        if not state_array.dtype == np.bool:
+        if not state_array.dtype == bool:
             raise TypeError("state_array must be dtype bool")
         return resorting_cpp.sortParallel(state_array, *comp_zone_row_range, *comp_zone_col_range)
 
