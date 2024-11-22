@@ -320,7 +320,7 @@ std::tuple<std::optional<ParallelMove>,int,double> fillColumnHorizontally(py::Ei
                 const auto& emptySitesInCol = emptyCompZoneLocations[targetCol - colDimCompZone[0]];
                 size_t *sourceSiteMapping = new size_t[emptySitesInCol.size()]();
                 unsigned int filledSites = 0;
-                int dist = 1;
+                size_t dist = 1;
                 for(; dist < cols; dist++)
                 {
                     if(rowFirst)
@@ -337,7 +337,7 @@ std::tuple<std::optional<ParallelMove>,int,double> fillColumnHorizontally(py::Ei
                     filledSites = 0;
                     for(const auto& emptySite : emptySitesInCol)
                     {
-                        while(atomLocationIndex < atomLocations.size() && (int)atomLocations[atomLocationIndex] < (int)emptySite - dist)
+                        while(atomLocationIndex < atomLocations.size() && (int)atomLocations[atomLocationIndex] < (int)emptySite - (int)dist)
                         {
                             atomLocationIndex++;
                         }
@@ -345,7 +345,7 @@ std::tuple<std::optional<ParallelMove>,int,double> fillColumnHorizontally(py::Ei
                         {
                             break;
                         }
-                        else if((int)atomLocations[atomLocationIndex] >= (int)emptySite - dist && 
+                        else if((int)atomLocations[atomLocationIndex] >= (int)emptySite - (int)dist && 
                             atomLocations[atomLocationIndex] <= emptySite + dist)
                         {
                             if(rowFirst)
@@ -392,7 +392,6 @@ std::tuple<std::optional<ParallelMove>,int,double> fillRowThroughSubspace(py::Ei
     size_t compZone[4], std::shared_ptr<spdlog::logger> logger)
 {
     double halfStepMoveCost = costPerSubMove(M_SQRT1_2);
-    unsigned int requiredAtomsPerRow = compZone[3] - compZone[2];
     std::optional<ParallelMove> bestMove = std::nullopt;
     unsigned int bestFillableGaps = 0;
     double bestCostPerFilledGap = 0;
@@ -410,19 +409,19 @@ std::tuple<std::optional<ParallelMove>,int,double> fillRowThroughSubspace(py::Ei
         unsigned int outerAODLimit = 0;
         fillDimensionDependantData(stateArray, compZone, rowFirst, outerDimCompZone, innerDimCompZone, outerSize, innerSize, outerAODLimit, innerAODLimit);
 
-        unsigned int *borderAtomsLeft = new unsigned int[outerDimCompZone[1] - outerDimCompZone[0]]();
+        unsigned int *borderAtomsLeft = new (std::nothrow) unsigned int[outerDimCompZone[1] - outerDimCompZone[0]]();
         if(borderAtomsLeft == 0)
         {
             logger->error("Could not allocate memory");
             return std::tuple<std::optional<ParallelMove>,int,double>(std::nullopt, 0, __DBL_MAX__);
         }
-        unsigned int *borderAtomsRight = new unsigned int[outerDimCompZone[1] - outerDimCompZone[0]]();
+        unsigned int *borderAtomsRight = new (std::nothrow) unsigned int[outerDimCompZone[1] - outerDimCompZone[0]]();
         if(borderAtomsRight == 0)
         {
             logger->error("Could not allocate memory");
             return std::tuple<std::optional<ParallelMove>,int,double>(std::nullopt, 0, __DBL_MAX__);
         }
-        unsigned int *emptyCompZoneLocations = new unsigned int[outerDimCompZone[1] - outerDimCompZone[0]]();
+        unsigned int *emptyCompZoneLocations = new (std::nothrow) unsigned int[outerDimCompZone[1] - outerDimCompZone[0]]();
         if(emptyCompZoneLocations == 0)
         {
             logger->error("Could not allocate memory");
@@ -595,7 +594,6 @@ std::tuple<std::optional<ParallelMove>,int,double> fillRowThroughSubspace(py::Ei
 std::tuple<std::optional<ParallelMove>,int,double> fillRowSidesDirectly(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>& stateArray, 
     size_t compZone[4], std::shared_ptr<spdlog::logger> logger)
 {
-    unsigned int requiredAtomsPerRow = compZone[3] - compZone[2];
     std::optional<ParallelMove> bestMove = std::nullopt;
     unsigned int bestFillableGaps = 0;
     double bestCostPerFilledGap = 0;
@@ -768,9 +766,9 @@ bool analyzeArray(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynami
     size_t compZone[4], unsigned int& vacancies, std::shared_ptr<spdlog::logger> logger)
 {
     vacancies = 0;
-    for(size_t row = 0; row < stateArray.rows(); row++)
+    for(size_t row = 0; row < (size_t)stateArray.rows(); row++)
     {
-        for(size_t col = 0; col < stateArray.cols(); col++)
+        for(size_t col = 0; col < (size_t)stateArray.cols(); col++)
         {
             if(!stateArray(row,col) && row >= compZone[0] && row < compZone[1] && col >= compZone[2] && col < compZone[3])
             {
@@ -832,24 +830,24 @@ bool findNextMove(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynami
     return true;
 }
 
-std::vector<ParallelMove> sortParallel(
+std::optional<std::vector<ParallelMove>> sortParallel(
     py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>& stateArray, 
     size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd)
 {
     std::shared_ptr<spdlog::logger> logger;
-    if((logger = spdlog::get("parallelSortingLogger")) == nullptr)
+    if((logger = spdlog::get(PARALLEL_LOGGER_NAME)) == nullptr)
     {
-        logger = spdlog::basic_logger_mt("parallelSortingLogger", "log.txt");
+        logger = spdlog::basic_logger_mt(PARALLEL_LOGGER_NAME, LOG_FILE);
     }
     logger->set_level(spdlog::level::debug);
 
     size_t compZone[4] = {compZoneRowStart, compZoneRowEnd, compZoneColStart, compZoneColEnd};
     std::vector<ParallelMove> moves;
-    if(compZoneRowStart >= compZoneRowEnd || compZoneRowStart < 0 || compZoneRowEnd > stateArray.rows() || 
-        compZoneColStart >= compZoneColEnd || compZoneColStart < 0 || compZoneColEnd > stateArray.cols())
+    if(compZoneRowStart >= compZoneRowEnd || compZoneRowEnd > (size_t)stateArray.rows() || 
+        compZoneColStart >= compZoneColEnd || compZoneColEnd > (size_t)stateArray.cols())
     {
         logger->error("No suitable arguments");
-        return moves;
+        return std::nullopt;
     }
     unsigned int vacancies = 0;
     analyzeArray(stateArray, compZone, vacancies, logger);
@@ -859,7 +857,7 @@ std::vector<ParallelMove> sortParallel(
         if(!findNextMove(stateArray, compZone, moves, sorted, vacancies, logger))
         {
             logger->error("No move could be found");
-            return moves;
+            return std::nullopt;
         }
     }
     logger->flush();

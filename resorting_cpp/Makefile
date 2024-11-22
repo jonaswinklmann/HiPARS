@@ -2,7 +2,7 @@ CC=c++
 INCLUDE=-I../extern/pybind11/include -Iinclude -I../extern/eigen -I../extern/spdlog/include $(shell python3-config --includes)
 CXXFLAGS=-O3 -Wall -shared -std=c++17 -fPIC $(INCLUDE)
 
-TARGET_DIR=../
+TARGET_DIR=../resorting_pip/resorting/
 SRC_DIR	:= src
 OBJ_DIR	:= obj
 BIN_DIR	:= lib

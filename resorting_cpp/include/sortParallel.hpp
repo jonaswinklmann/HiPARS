@@ -1,3 +1,5 @@
+#include "sort.hpp"
+
 #define AOD_TOTAL_LIMIT 16
 #define AOD_ROW_LIMIT 16
 #define AOD_COL_LIMIT 16
@@ -10,17 +12,7 @@
 #define ALLOW_MOVES_BETWEEN_ROWS true
 #define ALLOW_MOVES_BETWEEN_COLS true
 
-#define DOUBLE_EQUIVALENCE_THRESHOLD 0.00001
-
-#include <Eigen/Dense>
-#include <vector>
-#include <pybind11/pybind11.h>
-#include "pybind11/eigen.h"
-#include "spdlog/spdlog.h"
-
-namespace py = pybind11;
-
-typedef Eigen::Stride<Eigen::Dynamic, Eigen::Dynamic> StrideDyn;
+#define PARALLEL_LOGGER_NAME "parallelSortingLogger"
 
 class ParallelMove
 {
@@ -38,6 +30,6 @@ class ParallelMove
         bool execute(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>& stateArray, std::shared_ptr<spdlog::logger> logger);
 };
 
-std::vector<ParallelMove> sortParallel(
+std::optional<std::vector<ParallelMove>> sortParallel(
     py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>& stateArray, 
     size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd);

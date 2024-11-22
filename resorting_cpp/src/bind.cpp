@@ -8,7 +8,8 @@ namespace py = pybind11;
 PYBIND11_MODULE(resorting_cpp, m) {
     m.doc() = "pybind11 resorting module";
 
-    m.def("sortSequentiallyByRow", &sortSequentiallyByRow, "A function that sorts an array of atoms row by row", py::arg("stateArray"), py::arg("filledShape"));
+    m.def("sortSequentiallyByRow", &sortSequentiallyByRow, "A function that sorts an array of atoms row by row", py::arg("stateArray"), 
+        py::arg("compZoneRowStart"), py::arg("compZoneRowEnd"), py::arg("compZoneColStart"), py::arg("compZoneColEnd"));
 
     m.def("sortParallel", &sortParallel, "A function that sorts an array of atoms in parallel", py::arg("stateArray"), 
         py::arg("compZoneRowStart"), py::arg("compZoneRowEnd"), py::arg("compZoneColStart"), py::arg("compZoneColEnd"));
@@ -22,10 +23,16 @@ PYBIND11_MODULE(resorting_cpp, m) {
     .def(py::init())
     .def_readwrite("steps", &ParallelMove::steps);
 
+    py::enum_<Direction>(m, "Direction")
+    .value("HOR", Direction::HOR)
+    .value("VER", Direction::VER)
+    .value("NONE", Direction::NONE)
+    .value("DIAG", Direction::DIAG)
+    .export_values();
+
     py::class_<Move>(m, "Move")
     .def(py::init())
-    .def_readwrite("x", &Move::x)
-    .def_readwrite("y", &Move::y)
-    .def_readwrite("xDir", &Move::xDir)
-    .def_readwrite("yDir", &Move::yDir);
+    .def_readwrite("sites_list", &Move::sites_list)
+    .def_readwrite("distance", &Move::distance)
+    .def_readwrite("init_dir", &Move::init_dir);
 };

@@ -1,18 +1,22 @@
-#include <Eigen/Dense>
-#include <vector>
-#include <pybind11/pybind11.h>
-#include "pybind11/eigen.h"
+#include "sort.hpp"
 
-namespace py = pybind11;
+#define SEQUENTIAL_LOGGER_NAME "sequentialSortingLogger"
 
-typedef Eigen::Stride<Eigen::Dynamic, Eigen::Dynamic> StrideDyn;
-
-struct Move
-{
-    unsigned int x, y;
-    int xDir, yDir;
+enum class Direction {
+    HOR = 0,
+    VER = 1,
+    NONE = 2,
+    DIAG = 3
 };
 
-std::vector<Move> sortSequentiallyByRow(
+typedef struct Move {
+    std::vector<std::pair<double,double>> sites_list;
+    double distance;
+    Direction init_dir;
+} Move;
+
+std::optional<std::vector<Move>> sortSequentiallyByRow(
     py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>& stateArray, 
-    Eigen::Array2i filledShape);
+    size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd);
+
+bool sortSequentiallyByRowCA(std::vector<Move>& ml, size_t rows, size_t cols, bool** stateArray, size_t compZone[4], std::shared_ptr<spdlog::logger> logger);
