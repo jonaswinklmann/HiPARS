@@ -5,6 +5,7 @@
 #include <iostream>
 #include <fstream>
 
+#include "config.hpp"
 #include "spdlog/sinks/basic_file_sink.h"
 
 size_t roundCoordDown(double coord)
@@ -835,9 +836,10 @@ std::optional<std::vector<ParallelMove>> sortParallel(
     size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd)
 {
     std::shared_ptr<spdlog::logger> logger;
-    if((logger = spdlog::get(PARALLEL_LOGGER_NAME)) == nullptr)
+    Config& config = Config::getInstance();
+    if((logger = spdlog::get(config.parallelLoggerName)) == nullptr)
     {
-        logger = spdlog::basic_logger_mt(PARALLEL_LOGGER_NAME, LOG_FILE);
+        logger = spdlog::basic_logger_mt(config.parallelLoggerName, config.logFileName);
     }
     logger->set_level(spdlog::level::debug);
 
@@ -860,7 +862,5 @@ std::optional<std::vector<ParallelMove>> sortParallel(
             return std::nullopt;
         }
     }
-    logger->flush();
-    logger.reset();
     return moves;
 }

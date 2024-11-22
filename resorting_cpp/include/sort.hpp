@@ -9,8 +9,6 @@
 
 #define DOUBLE_EQUIVALENCE_THRESHOLD 0.00001
 
-#define LOG_FILE "log.txt"
-
 namespace py = pybind11;
 
 typedef Eigen::Stride<Eigen::Dynamic, Eigen::Dynamic> StrideDyn;

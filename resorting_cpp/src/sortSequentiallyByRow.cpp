@@ -6,6 +6,7 @@
 #include <new>
 #include <optional>
 
+#include "config.hpp"
 #include "spdlog/sinks/basic_file_sink.h"
 
 int priorityCompare(const void* a, const void* b)
@@ -362,7 +363,6 @@ bool pullFromBothDirections(std::vector<Move>& ml, size_t border[4], StateArrayA
 
     delete[] pullPriority;
     delete[] orthogonalStatus;
-    logger->flush();
     return true;
 }
 
@@ -408,7 +408,6 @@ bool pullFromDirection(std::vector<Move>& ml, size_t border[4], StateArrayAccess
 
     delete[] pullPriority;
     delete[] orthogonalStatus;
-    logger->flush();
     return true;
 }
 
@@ -739,8 +738,6 @@ bool findRowToBalanceExcessAtoms(StateArrayAccessor& stateArray,
 
 bool mainSortingLoop(std::vector<Move>& ml, StateArrayAccessor& stateArray, size_t compZone[4], std::shared_ptr<spdlog::logger> logger)
 {
-    logger->debug("Test3");
-    logger->flush();
     size_t rows = stateArray.rows();
     size_t cols = stateArray.cols();
     if(compZone[3] < compZone[2] || compZone[2] < 0 || compZone[3] >= cols ||
@@ -896,20 +893,17 @@ std::optional<std::vector<Move>> sortSequentiallyByRow(
     size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd)
 {
     std::shared_ptr<spdlog::logger> logger;
-    if((logger = spdlog::get(SEQUENTIAL_LOGGER_NAME)) == nullptr)
+    Config& config = Config::getInstance();
+    if((logger = spdlog::get(config.sequentialLoggerName)) == nullptr)
     {
-        logger = spdlog::basic_logger_mt(SEQUENTIAL_LOGGER_NAME, LOG_FILE);
+        logger = spdlog::basic_logger_mt(config.sequentialLoggerName, config.logFileName);
     }
     logger->set_level(spdlog::level::debug);
-    logger->debug("Test");
-    logger->flush();
 
     std::vector<Move> moves;
 
     size_t compZone[4] = {compZoneRowStart, compZoneRowEnd, compZoneColStart, compZoneColEnd};
 
-    logger->debug("Test2");
-    logger->flush();
     EigenArrayStateArrayAccessor stateArrayAccessor(stateArray);
     bool success = mainSortingLoop(moves, stateArrayAccessor, compZone, logger);
 

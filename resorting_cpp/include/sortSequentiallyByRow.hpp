@@ -1,7 +1,5 @@
 #include "sort.hpp"
 
-#define SEQUENTIAL_LOGGER_NAME "sequentialSortingLogger"
-
 enum class Direction {
     HOR = 0,
     VER = 1,

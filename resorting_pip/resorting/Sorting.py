@@ -12,8 +12,18 @@ import numpy as np
 class Sorting:
     """Main class for sorting array of neutral atoms"""
 
-    def __init__(self, log_file = "log.txt"):
+    def __init__(self):
         """Constructor"""
+    
+    def configureLog(self, log_file_name : str = None, parallel_logger_name : str = None, sequential_logger_name : str = None):
+        config = resorting_cpp.Config()
+        if log_file_name:
+            config.logFileName = log_file_name
+        if parallel_logger_name:
+            config.sequentialLoggerName = parallel_logger_name
+        if sequential_logger_name:
+            config.parallelLoggerName = sequential_logger_name
+
 
     def sortSequentially(self, state_array, comp_zone_row_range, comp_zone_col_range):
         """Function for sorting sequentially

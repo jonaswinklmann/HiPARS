@@ -2,6 +2,7 @@
 #include <pybind11/stl.h>
 #include "sortSequentiallyByRow.hpp"
 #include "sortParallel.hpp"
+#include "config.hpp"
 
 namespace py = pybind11;
 
@@ -35,4 +36,10 @@ PYBIND11_MODULE(resorting_cpp, m) {
     .def_readwrite("sites_list", &Move::sites_list)
     .def_readwrite("distance", &Move::distance)
     .def_readwrite("init_dir", &Move::init_dir);
+
+    py::class_<Config, std::unique_ptr<Config, py::nodelete>>(m, "Config")
+    .def(py::init<>([]{return &Config::getInstance();}))
+    .def_readwrite("logFileName", &Config::logFileName)
+    .def_readwrite("sequentialLoggerName", &Config::sequentialLoggerName)
+    .def_readwrite("parallelLoggerName", &Config::parallelLoggerName);
 };
