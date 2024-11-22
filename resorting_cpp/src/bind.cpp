@@ -41,5 +41,6 @@ PYBIND11_MODULE(resorting_cpp, m) {
     .def(py::init<>([]{return &Config::getInstance();}))
     .def_readwrite("logFileName", &Config::logFileName)
     .def_readwrite("sequentialLoggerName", &Config::sequentialLoggerName)
-    .def_readwrite("parallelLoggerName", &Config::parallelLoggerName);
+    .def_readwrite("parallelLoggerName", &Config::parallelLoggerName)
+    .def("flushLogs", &Config::flushLogs);
 };

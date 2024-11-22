@@ -15,7 +15,7 @@ class Sorting:
     def __init__(self):
         """Constructor"""
     
-    def configureLog(self, log_file_name : str = None, parallel_logger_name : str = None, sequential_logger_name : str = None):
+    def configure_log(self, log_file_name : str = None, parallel_logger_name : str = None, sequential_logger_name : str = None):
         config = resorting_cpp.Config()
         if log_file_name:
             config.logFileName = log_file_name
@@ -24,8 +24,7 @@ class Sorting:
         if sequential_logger_name:
             config.parallelLoggerName = sequential_logger_name
 
-
-    def sortSequentially(self, state_array, comp_zone_row_range, comp_zone_col_range):
+    def sort_sequentially(self, state_array, comp_zone_row_range, comp_zone_col_range):
         """Function for sorting sequentially
         @param state_array The array of boolean values to be sorted
         @param comp_zone_row_range Tuple (start,end) of start(inclusive) and end(exclusive) of rows in computational zone
@@ -38,7 +37,7 @@ class Sorting:
             raise TypeError("state_array must be dtype bool")
         return resorting_cpp.sortSequentiallyByRow(state_array, *comp_zone_row_range, *comp_zone_col_range)
     
-    def sortParallel(self, state_array, comp_zone_row_range, comp_zone_col_range):
+    def sort_parallel(self, state_array, comp_zone_row_range, comp_zone_col_range):
         """Function for sorting in parallel
         @param state_array The array of boolean values to be sorted
         @param comp_zone_row_range Tuple (start,end) of start(inclusive) and end(exclusive) of rows in computational zone
@@ -51,3 +50,6 @@ class Sorting:
         if not state_array.dtype == np.bool:
             raise TypeError("state_array must be dtype bool")
         return resorting_cpp.sortParallel(state_array, *comp_zone_row_range, *comp_zone_col_range)
+
+    def flush_logs(self):
+        resorting_cpp.Config().flushLogs()

@@ -1,4 +1,5 @@
 #include <string>
+#include <spdlog/spdlog.h>
 
 #define DEFAULT_LOGFILE_NAME "sorting.log"
 
@@ -18,6 +19,11 @@ class Config
     public:
         Config(Config const&) = delete;
         void operator=(Config const&) = delete;
+        void flushLogs()
+        {
+            spdlog::get(sequentialLoggerName)->flush();
+            spdlog::get(parallelLoggerName)->flush();
+        };
         std::string logFileName;
         std::string sequentialLoggerName;
         std::string parallelLoggerName;
