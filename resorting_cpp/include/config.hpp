@@ -21,8 +21,15 @@ class Config
         void operator=(Config const&) = delete;
         void flushLogs()
         {
-            spdlog::get(sequentialLoggerName)->flush();
-            spdlog::get(parallelLoggerName)->flush();
+            std::shared_ptr<spdlog::logger> logger;
+            if((logger = spdlog::get(sequentialLoggerName)) != nullptr)
+            {
+                logger->flush();
+            }
+            if((logger = spdlog::get(parallelLoggerName)) != nullptr)
+            {
+                logger->flush();
+            }
         };
         std::string logFileName;
         std::string sequentialLoggerName;
