@@ -2,7 +2,8 @@
 
 import os
 import sys
-sys.path.insert(0, os.path.abspath('../../resorting/resorting_pip/'))
+sys.path.insert(0, os.path.abspath('../../resorting_pip/resorting/'))
+import sphinx_rtd_theme
 #
 # For the full list of built-in configuration values, see the documentation:
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
