@@ -7,13 +7,30 @@
 namespace py = pybind11;
 
 PYBIND11_MODULE(resorting_cpp, m) {
-    m.doc() = "pybind11 resorting module";
+    m.doc() = "pybind11 resorting module\n";
 
     m.def("sortSequentiallyByRow", &sortSequentiallyByRow, "A function that sorts an array of atoms row by row", py::arg("stateArray"), 
-        py::arg("compZoneRowStart"), py::arg("compZoneRowEnd"), py::arg("compZoneColStart"), py::arg("compZoneColEnd"));
+        py::arg("compZoneRowStart"), py::arg("compZoneRowEnd"), py::arg("compZoneColStart"), py::arg("compZoneColEnd"),
+        R"pbdoc(
+            A function that sorts an array of atoms sequentially row by row
+
+            :param stateArray: The array of boolean values to be sorted
+            :type stateArray: np.ndarray[bool]
+            :param compZoneRowStart: Start row of computational zone (inclusive)
+            :type compZoneRowStart: int
+            :param compZoneRowEnd: End row of computational zone (exclusive)
+            :type compZoneRowEnd: int
+            :param compZoneColStart: Start column of computational zone (inclusive)
+            :type compZoneColStart: int
+            :param compZoneColEnd: End column of computational zone (exclusive)
+            :type compZoneColEnd: int
+            :return: A list of moves to sort array or None if sorting has failed.
+            :rtype: list[Move]
+        )pbdoc");
 
     m.def("sortParallel", &sortParallel, "A function that sorts an array of atoms in parallel", py::arg("stateArray"), 
-        py::arg("compZoneRowStart"), py::arg("compZoneRowEnd"), py::arg("compZoneColStart"), py::arg("compZoneColEnd"));
+        py::arg("compZoneRowStart"), py::arg("compZoneRowEnd"), py::arg("compZoneColStart"), py::arg("compZoneColEnd"))
+        .doc() = "sortParallelTest\n";
 
     py::class_<ParallelMove::Step>(m, "ParallelMoveStep")
     .def(py::init())
