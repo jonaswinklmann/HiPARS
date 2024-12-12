@@ -3,6 +3,8 @@
 #include <pybind11/pybind11.h>
 #include "pybind11/eigen.h"
 #include "spdlog/spdlog.h"
+#include <stdexcept>
+#include <sstream>
 
 #ifndef sort_hpp_included
 #define sort_hpp_included
@@ -19,6 +21,105 @@ public:
     virtual bool& operator()(std::size_t row, std::size_t col) = 0;
     virtual std::size_t rows() = 0;
     virtual std::size_t cols() = 0;
+};
+
+class RowBitMask
+{
+public:
+    std::vector<size_t> indices;
+    size_t count;
+    uint64_t *const bitMask;
+    RowBitMask() : indices(), count(0), bitMask(nullptr) {};
+    RowBitMask(size_t count, std::optional<size_t> index = std::nullopt) : indices(), 
+        count(count), bitMask(new uint64_t[this->count / 64 + 1]()) 
+    {
+        if(index.has_value())
+        {
+            this->indices.push_back(index.value());
+        }
+    }
+    RowBitMask(std::vector<size_t> indices, size_t count, uint64_t *bitMask) : indices(indices), 
+        count(count), bitMask(bitMask) {}
+    RowBitMask(const RowBitMask& other) : indices(other.indices), count(other.count), 
+        bitMask(new uint64_t[this->count / 64 + 1]()) 
+    {
+        for(size_t i = 0; i <= this->count / 64; i++)
+        {
+            this->bitMask[i] = other.bitMask[i];
+        }
+    }
+    ~RowBitMask()
+    {
+        delete[] this->bitMask;
+    }
+    static RowBitMask fromOr(const RowBitMask& l, const RowBitMask& r)
+    {
+        size_t c = l.count < r.count ? l.count : r.count;
+        uint64_t *bitMask = new uint64_t[c / 64 + 1];
+        for(size_t i = 0; i <= c / 64; i++)
+        {
+            bitMask[i] = l.bitMask[i] | r.bitMask[i];
+        }
+        std::vector<size_t> indices;
+        indices.insert(indices.end(), l.indices.begin(), l.indices.end());
+        indices.insert(indices.end(), r.indices.begin(), r.indices.end());
+        return RowBitMask(indices, c, bitMask);
+    }
+    static RowBitMask fromAnd(const RowBitMask& l, const RowBitMask& r)
+    {
+        size_t c = l.count < r.count ? l.count : r.count;
+        uint64_t *bitMask = new uint64_t[c / 64 + 1];
+        for(size_t i = 0; i <= c / 64; i++)
+        {
+            bitMask[i] = l.bitMask[i] & r.bitMask[i];
+        }
+        std::vector<size_t> indices;
+        indices.insert(indices.end(), l.indices.begin(), l.indices.end());
+        indices.insert(indices.end(), r.indices.begin(), r.indices.end());
+        return RowBitMask(indices, c, bitMask);
+    }
+    void set(size_t index, bool value)
+    {
+        if(index < this->count)
+        {
+            if(value)
+            {
+                this->bitMask[index / 64] |= UINT64_C(1) << (index % 64);
+            }
+            else
+            {
+                this->bitMask[index / 64] &= ~(UINT64_C(1) << (index % 64));
+            }
+        }
+        else
+        {
+            std::stringstream msg;
+            msg << "BitMask index " << index << " out of bounds (size: " << this->count << ") in set";
+            throw std::invalid_argument(msg.str());
+        }
+    }
+    bool operator[](size_t index)
+    {
+        if(index < this->count)
+        {
+            return this->bitMask[index / 64] & (UINT64_C(1) << (index % 64));
+        }
+        else
+        {
+            std::stringstream msg;
+            msg << "BitMask index " << index << " out of bounds (size: " << this->count << ") in operator[]";
+            throw std::invalid_argument(msg.str());
+        }
+    }
+    unsigned int bitsSet()
+    {
+        unsigned int popCount = 0;
+        for(size_t i = 0; i <= this->count / 64; i++)
+        {
+            popCount += std::__popcount(this->bitMask[i]);
+        }
+        return popCount;
+    }
 };
 
 class EigenArrayStateArrayAccessor : public StateArrayAccessor
