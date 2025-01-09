@@ -414,10 +414,7 @@ std::tuple<std::optional<ParallelMove>,int,double> improveMoveByAddingIndependen
     unsigned int selectedRows = start.rowSelection.size();
     unsigned int selectedCols = start.colSelection.size();
 
-    unsigned int bestAdditionalFilledVacancies = 0;
     double bestCostPerFilledVacancy = cost.value() / (double)filledVacancies.value();
-    unsigned int bestAdditionalRowDiff = 0;
-    unsigned int bestAdditionalColDiff = 0;
     while(selectedRows < AOD_ROW_LIMIT && selectedCols < AOD_COL_LIMIT && (selectedCols + 1) * (selectedRows + 1) < AOD_TOTAL_LIMIT)
     {
         std::optional<std::tuple<size_t,size_t,size_t,size_t>> addedOuterAndInnerRowAndCol = std::nullopt;
@@ -618,6 +615,7 @@ std::tuple<std::optional<ParallelMove>,int,double> improveComplexMove(
         }
     }
     double baseCost = approxCostPerMove(rowDiff, colDiff);
+    logger->debug("Base cost: {} for r {} c {}", baseCost, rowDiff, colDiff);
     double costWithoutRowMove = approxCostPerMove(0, colDiff);
     double costWithoutColMove = approxCostPerMove(rowDiff, 0);
 
@@ -681,7 +679,7 @@ std::tuple<std::optional<ParallelMove>,int,double> improveComplexMove(
                                 }
                             }
                         }
-                        if(allowed)
+                        if(allowed && additionalFilledVacancies > 0)
                         {
                             double newCost = baseCost;
                             double diff = abs((double)outerRow - (double)innerRow);
@@ -759,7 +757,7 @@ std::tuple<std::optional<ParallelMove>,int,double> improveComplexMove(
                                 }
                             }
                         }
-                        if(allowed)
+                        if(allowed && additionalFilledVacancies > 0)
                         {
                             double newCost = baseCost;
                             double diff = abs((double)outerCol - (double)innerCol);
@@ -967,6 +965,31 @@ std::pair<double, std::optional<ParallelMove>> checkComplexMoveCost(py::EigenDRe
     return std::pair(0,std::nullopt);
 }
 
+bool stopFurtherMoveInvestigationAtRowCount(unsigned int rowCount, unsigned int maxRows, 
+    unsigned int currIter, unsigned int iterCountRowCountStart, size_t availableElems, size_t alreadyInvElems, 
+    std::vector<std::pair<unsigned int,std::shared_ptr<RowBitMask>>> *bitMasksPerInnerRowSet)
+{
+    if(bitMasksPerInnerRowSet == nullptr || bitMasksPerInnerRowSet->empty() || rowCount == maxRows)
+    {
+        return false;
+    }
+    else
+    {
+        // Skew towards earlier by giving 150% to the first and 50% to the last and interpolating linearly inbetween
+        unsigned int targetIterCount = MAX_MULTI_ITER_COUNT / (maxRows - rowCount + 1) * 
+            (1.5 - (rowCount - 2) / (maxRows - 2));
+        double alreadyInvFrac = (double)(currIter - iterCountRowCountStart) / (double)targetIterCount;
+        if(alreadyInvFrac > 1)
+        {
+            return true;
+        }
+        else
+        {
+            return false;
+        }
+    }
+}
+
 std::tuple<std::optional<ParallelMove>,int,double> moveSeveralRowsAndCols(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>& stateArray, 
     size_t compZone[4], std::shared_ptr<spdlog::logger> logger,
     std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>> alreadyMoved)
@@ -1004,7 +1027,7 @@ std::tuple<std::optional<ParallelMove>,int,double> moveSeveralRowsAndCols(py::Ei
 
         std::vector<std::shared_ptr<RowBitMask>> bitMaskByInnerRow;
         std::vector<RowBitMask> bitMaskByOuterRow;
-        std::vector<std::shared_ptr<RowBitMask>> bitMaskInnerVec1;
+        std::vector<std::pair<unsigned int,std::shared_ptr<RowBitMask>>> bitMaskInnerVec1;
         std::vector<RowBitMask> bitMaskOuterVec1;
         for(size_t i = 0; i < rows; i++)
         {
@@ -1028,14 +1051,14 @@ std::tuple<std::optional<ParallelMove>,int,double> moveSeveralRowsAndCols(py::Ei
                     innerRowBitMask.set(j - colDimCompZone[0], !accessStateArray(stateArray, i, j, rowFirst));
                 }
                 bitMaskByInnerRow.push_back(std::make_shared<RowBitMask>(innerRowBitMask));
-                bitMaskInnerVec1.push_back(std::make_shared<RowBitMask>(innerRowBitMask));
+                bitMaskInnerVec1.push_back(std::pair(innerRowBitMask.bitsSet(), std::make_shared<RowBitMask>(innerRowBitMask)));
             }
         }
 
         // Calculate maximum target sizes
-        std::vector<std::shared_ptr<RowBitMask>> bitMaskInnerVec2;
-        std::vector<std::shared_ptr<RowBitMask>> *prevBitMasksPerInnerRowSet = &bitMaskInnerVec1;
-        std::vector<std::shared_ptr<RowBitMask>> *bitMasksPerInnerRowSet = &bitMaskInnerVec2;
+        std::vector<std::pair<unsigned int,std::shared_ptr<RowBitMask>>> bitMaskInnerVec2;
+        std::vector<std::pair<unsigned int,std::shared_ptr<RowBitMask>>> *prevBitMasksPerInnerRowSet = &bitMaskInnerVec1;
+        std::vector<std::pair<unsigned int,std::shared_ptr<RowBitMask>>> *bitMasksPerInnerRowSet = &bitMaskInnerVec2;
 
         unsigned int bestTotalSize = 0;
 
@@ -1044,14 +1067,21 @@ std::tuple<std::optional<ParallelMove>,int,double> moveSeveralRowsAndCols(py::Ei
         unsigned int iterCount = 0;
         for(unsigned int rowCount = 2; rowCount <= maxRows && iterCount < MAX_MULTI_ITER_COUNT; rowCount++)
         {
+            unsigned int iterCountAtRowStart = iterCount;
             bestSizePerInnerRowCount[rowCount] = std::pair(0,nullptr);
+            unsigned int i = 0;
             for(const auto& prevBitMask : *prevBitMasksPerInnerRowSet)
             {
-                for(size_t i = prevBitMask->indices.back() + 1; i < rowDimCompZone[1] && 
+                if(stopFurtherMoveInvestigationAtRowCount(rowCount, maxRows, iterCount, 
+                    iterCountAtRowStart, prevBitMasksPerInnerRowSet->size(), i, bitMasksPerInnerRowSet))
+                {
+                    break;
+                }
+                for(size_t i = prevBitMask.second->indices.back() + 1; i < rowDimCompZone[1] && 
                     iterCount < MAX_MULTI_ITER_COUNT; i++)
                 {
                     iterCount++;
-                    RowBitMask combBitMask = RowBitMask::fromAnd(*prevBitMask, *bitMaskByInnerRow[i - rowDimCompZone[0]]);
+                    RowBitMask combBitMask = RowBitMask::fromAnd(*prevBitMask.second, *bitMaskByInnerRow[i - rowDimCompZone[0]]);
                     unsigned int overlap = combBitMask.bitsSet();
                     if(overlap > bestSizePerInnerRowCount[rowCount].first)
                     {
@@ -1062,17 +1092,18 @@ std::tuple<std::optional<ParallelMove>,int,double> moveSeveralRowsAndCols(py::Ei
                     {
                         bestTotalSize = overlap * rowCount;
                     }
-                    if(overlap >= bestTotalSize / (rowCount + 1))
+                    if(overlap >= bestTotalSize / (rowCount + 1) && overlap >= 2)
                     {
-                        bitMasksPerInnerRowSet->push_back(std::make_shared<RowBitMask>(combBitMask));
+                        bitMasksPerInnerRowSet->push_back(std::pair(overlap,std::make_shared<RowBitMask>(combBitMask)));
                     }
                 }
                 if(iterCount > MAX_MULTI_ITER_COUNT)
                 {
                     break;
                 }
+                i++;
             }
-            std::vector<std::shared_ptr<RowBitMask>> *tmpRef = prevBitMasksPerInnerRowSet;
+            auto *tmpRef = prevBitMasksPerInnerRowSet;
             prevBitMasksPerInnerRowSet = bitMasksPerInnerRowSet;
             bitMasksPerInnerRowSet = tmpRef;
             bitMasksPerInnerRowSet->clear();
