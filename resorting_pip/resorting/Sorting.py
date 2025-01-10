@@ -7,7 +7,7 @@ import resorting_cpp
 import numpy as np
 
 class Sorting:
-    """Main class for sorting array of neutral atoms
+    """Python wrapper class for sorting arrays of neutral atoms
     """
 
     def __init__(self):
@@ -64,7 +64,7 @@ class Sorting:
         :raises TypeError: state_array must be numpy bool array
         :raises TypeError: state_array must be dtype bool
         :return: A list of moves to sort array or None if sorting has failed. A ParallelMove contains .steps, which is a list of ParallelMoveStep objects, each containing .colSelection and .rowSelection, which are lists of doubles
-        :rtype: list[Move], optional
+        :rtype: list[ParallelMove], optional
         """
         if not isinstance(state_array, np.ndarray):
             raise TypeError("state_array must be numpy bool array")
