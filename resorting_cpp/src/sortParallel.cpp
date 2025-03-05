@@ -74,22 +74,48 @@ double inline costPerSubMove(double dist)
 
 double approxCostPerMove(double dist1, double dist2)
 {
-    if(dist1 <= 1 + DOUBLE_EQUIVALENCE_THRESHOLD && dist2 <= 1 + DOUBLE_EQUIVALENCE_THRESHOLD)
+    if(ALLOW_DIAGONAL_MOVEMENT)
     {
-        return MOVE_COST_OFFSET + DIAG_STEP_COST;
+        if(dist1 <= 1 + DOUBLE_EQUIVALENCE_THRESHOLD && dist2 <= 1 + DOUBLE_EQUIVALENCE_THRESHOLD)
+        {
+            if(dist1 >= 1 - DOUBLE_EQUIVALENCE_THRESHOLD && dist2 >= 1 - DOUBLE_EQUIVALENCE_THRESHOLD)
+            {
+                return MOVE_COST_OFFSET + DIAG_STEP_COST;
+            }
+            else
+            {
+                // If not both are 1 then at least one has to be 0 so dist1+dist2 = sqrt(dist1^2 + dist2^2)
+                return MOVE_COST_OFFSET + costPerSubMove(dist1 + dist2);
+            }
+        }
+        else
+        {
+            double cost = MOVE_COST_OFFSET + 2 * HALF_DIAG_STEP_COST;
+            if(dist1 > 1 + DOUBLE_EQUIVALENCE_THRESHOLD)
+            {
+                cost += costPerSubMove(dist1 - 1);
+            }
+            if(dist2 > 1 + DOUBLE_EQUIVALENCE_THRESHOLD)
+            {
+                cost += costPerSubMove(dist2 - 1);
+            }
+            return cost;
+        }
     }
     else
     {
-        double cost = MOVE_COST_OFFSET + 2 * HALF_STEP_COST;
-        if(dist1 > 1 + DOUBLE_EQUIVALENCE_THRESHOLD)
+        if(dist1 < 1 + DOUBLE_EQUIVALENCE_THRESHOLD)
         {
-            cost += costPerSubMove(dist1 - 1);
+            return MOVE_COST_OFFSET + 2 * HALF_STEP_COST + costPerSubMove(dist2);
         }
-        if(dist2 > 1 + DOUBLE_EQUIVALENCE_THRESHOLD)
+        else if(dist2 < 1 + DOUBLE_EQUIVALENCE_THRESHOLD)
         {
-            cost += costPerSubMove(dist2 - 1);
+            return MOVE_COST_OFFSET + 2 * HALF_STEP_COST + costPerSubMove(dist1);
         }
-        return cost;
+        else
+        {
+            return MOVE_COST_OFFSET + 2 * HALF_STEP_COST + costPerSubMove(dist1 - 0.5) + costPerSubMove(dist2 - 0.5);
+        }
     }
 }
 
@@ -198,14 +224,51 @@ ParallelMove ParallelMove::fromStartAndEnd(
     }
        
     move.steps.push_back(start);
-    if(!completelyDirectMove && (maxRowDist > 1 + DOUBLE_EQUIVALENCE_THRESHOLD || maxColDist > 1 + DOUBLE_EQUIVALENCE_THRESHOLD))
+    if(!completelyDirectMove && (!ALLOW_DIAGONAL_MOVEMENT ||
+        (maxRowDist > 1 + DOUBLE_EQUIVALENCE_THRESHOLD || maxColDist > 1 + DOUBLE_EQUIVALENCE_THRESHOLD)))
     {
+        bool require4Steps = maxRowDist > 1 + DOUBLE_EQUIVALENCE_THRESHOLD && maxColDist > 1 + DOUBLE_EQUIVALENCE_THRESHOLD;
+        if(!ALLOW_DIAGONAL_MOVEMENT)
+        {
+            if(maxRowDist > maxColDist)
+            {
+                step1.rowSelection = start.rowSelection;
+                if(require4Steps)
+                {
+                    step2.colSelection = end.colSelection;
+                }
+                else
+                {
+                    step2.rowSelection = end.rowSelection;
+                }
+            }
+            else
+            {
+                step1.colSelection = start.colSelection;
+                if(require4Steps)
+                {
+                    step2.rowSelection = end.rowSelection;
+                }
+                else
+                {
+                    step2.colSelection = end.colSelection;
+                }
+            }
+        }
         move.steps.push_back(step1);
-        if(maxRowDist > 1 + DOUBLE_EQUIVALENCE_THRESHOLD && maxColDist > 1 + DOUBLE_EQUIVALENCE_THRESHOLD)
+        if(require4Steps)
         {
             ParallelMove::Step intermediateStep;
-            intermediateStep.rowSelection = step2.rowSelection;
-            intermediateStep.colSelection = step1.colSelection;
+            if(maxRowDist > maxColDist)
+            {
+                intermediateStep.rowSelection = step2.rowSelection;
+                intermediateStep.colSelection = step1.colSelection;
+            }
+            else
+            {
+                intermediateStep.rowSelection = step1.rowSelection;
+                intermediateStep.colSelection = step2.colSelection;
+            }
             move.steps.push_back(std::move(intermediateStep));
         }
         move.steps.push_back(std::move(step2));
@@ -842,7 +905,7 @@ std::pair<double, std::optional<ParallelMove>> checkComplexMoveCost(py::EigenDRe
             fillableCols = maxColCount;
         }
 
-        double cost = MOVE_COST_OFFSET + 2 * HALF_STEP_COST;
+        double cost = MOVE_COST_OFFSET + 2 * HALF_DIAG_STEP_COST;
         double maxDist = 0;
         for(size_t i = 0; i < sourceBitMask.indices.size(); i++)
         {
@@ -1109,6 +1172,15 @@ std::tuple<std::optional<ParallelMove>,int,double> moveSeveralRowsAndCols(py::Ei
             bitMasksPerInnerRowSet->clear();
         }
 
+        for(unsigned int rowCount = 2; rowCount <= maxRows; rowCount++)
+        {
+            if(bestSizePerInnerRowCount[rowCount].second == nullptr || bestSizePerInnerRowCount[rowCount].first < 2)
+            {
+                break;
+            }
+            logger->debug("Max empty columns for {} rows: {}", rowCount, bestSizePerInnerRowCount[rowCount].first);
+        }
+
         // Calculate maximum sizes for border
         std::vector<RowBitMask> bitMaskOuterVec2;
         std::vector<RowBitMask> *prevBitMasksPerOuterRowSet = &bitMaskOuterVec1;
@@ -1315,7 +1387,7 @@ std::tuple<std::optional<ParallelMove>,int,double> fillColumnHorizontally(py::Ei
                         }
                     }
                     double approxCost = MOVE_COST_OFFSET + costPerSubMove(dist - 1) + 
-                        costPerSubMove(abs((int)borderCol - (int)targetCol) - 1) + 2 * HALF_STEP_COST;
+                        costPerSubMove(abs((int)borderCol - (int)targetCol) - 1) + 2 * HALF_DIAG_STEP_COST;
                     if(!bestMove.has_value() || approxCost / filledSites < bestCostPerFilledGap)
                     {
                         ParallelMove move = ParallelMove::fromStartAndEnd(stateArray, start, end, logger);
@@ -1425,7 +1497,7 @@ std::tuple<std::optional<ParallelMove>,int,double> fillRowThroughSubspace(py::Ei
                     fillableGaps = AOD_TOTAL_LIMIT;
                 }
                 
-                double minCost = MOVE_COST_OFFSET + costPerSubMove(outerDist) + costPerSubMove((fillableGaps - 1) / 2) + 2 * HALF_STEP_COST;
+                double minCost = MOVE_COST_OFFSET + costPerSubMove(outerDist) + costPerSubMove((fillableGaps - 1) / 2) + 2 * HALF_DIAG_STEP_COST;
                 if(fillableGaps > 0 && (!bestMove.has_value() || minCost / fillableGaps < bestCostPerFilledGap))
                 {
                     unsigned int minFromLeft = fillableGaps < currentBorderAtomsRight ? 0 : fillableGaps - currentBorderAtomsRight;
