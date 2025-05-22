@@ -1,3 +1,5 @@
+#pragma once
+
 #include <Eigen/Dense>
 #include <vector>
 #include <pybind11/pybind11.h>
@@ -5,9 +7,6 @@
 #include "spdlog/spdlog.h"
 #include <stdexcept>
 #include <sstream>
-
-#ifndef sort_hpp_included
-#define sort_hpp_included
 
 #define DOUBLE_EQUIVALENCE_THRESHOLD 0.00001
 
@@ -28,7 +27,9 @@ class RowBitMask
 public:
     std::vector<size_t> indices;
     size_t count;
-    uint64_t *const bitMask;
+private:
+    uint64_t *bitMask;
+public:
     RowBitMask() : indices(), count(0), bitMask(nullptr) {};
     RowBitMask(size_t count, std::optional<size_t> index = std::nullopt) : indices(), 
         count(count), bitMask(new uint64_t[this->count / 64 + 1]()) 
@@ -40,6 +41,9 @@ public:
     }
     RowBitMask(std::vector<size_t> indices, size_t count, uint64_t *bitMask) : indices(indices), 
         count(count), bitMask(bitMask) {}
+    RowBitMask(RowBitMask&& other) : indices(std::exchange(other.indices, std::vector<size_t>())), 
+        count(std::exchange(other.count, 0)), 
+        bitMask(std::exchange(other.bitMask, nullptr)) {}
     RowBitMask(const RowBitMask& other) : indices(other.indices), count(other.count), 
         bitMask(new uint64_t[this->count / 64 + 1]()) 
     {
@@ -111,6 +115,36 @@ public:
             throw std::invalid_argument(msg.str());
         }
     }
+    RowBitMask& operator|=(const RowBitMask& other)
+    {
+        size_t c = count < other.count ? count : other.count;
+        for(size_t i = 0; i <= c / 64; i++)
+        {
+            this->bitMask[i] = this->bitMask[i] | other.bitMask[i];
+        }
+        this->indices.insert(this->indices.end(), other.indices.begin(), other.indices.end());
+        return *this;
+    }
+    RowBitMask& operator&=(const RowBitMask& other)
+    {
+        size_t c = count < other.count ? count : other.count;
+        for(size_t i = 0; i <= c / 64; i++)
+        {
+            this->bitMask[i] = this->bitMask[i] & other.bitMask[i];
+        }
+        this->indices.insert(this->indices.end(), other.indices.begin(), other.indices.end());
+        return *this;
+    }
+    RowBitMask operator=(const RowBitMask&) = delete;
+    RowBitMask& operator=(RowBitMask&& other)
+    {
+        delete[] this->bitMask;
+        this->bitMask = std::exchange(other.bitMask, nullptr);
+        this->count = std::exchange(other.count, 0);
+        this->indices = std::exchange(other.indices, std::vector<size_t>());
+
+        return *this;
+    };
     unsigned int bitsSet()
     {
         unsigned int popCount = 0;
@@ -142,13 +176,13 @@ public:
     }
 };
 
-class CStyleStateArrayAccessor : public StateArrayAccessor
+class CStyle2DStateArrayAccessor : public StateArrayAccessor
 {
 private:
     bool **stateArray;
     std::size_t rowCount, colCount;
 public:
-    CStyleStateArrayAccessor(bool **array, std::size_t rows, std::size_t cols) : stateArray(array), rowCount(rows), colCount(cols) {}
+    CStyle2DStateArrayAccessor(bool **array, std::size_t rows, std::size_t cols) : stateArray(array), rowCount(rows), colCount(cols) {}
     bool& operator()(std::size_t row, std::size_t col)
     {
         return this->stateArray[row][col];
@@ -162,4 +196,24 @@ public:
         return this->colCount;
     }
 };
-#endif
+
+class CStyle1DStateArrayAccessor : public StateArrayAccessor
+{
+private:
+    bool *stateArray;
+    std::size_t rowCount, colCount;
+public:
+    CStyle1DStateArrayAccessor(bool *array, std::size_t rows, std::size_t cols) : stateArray(array), rowCount(rows), colCount(cols) {}
+    bool& operator()(std::size_t row, std::size_t col)
+    {
+        return this->stateArray[row * this->colCount + col];
+    }
+    std::size_t rows()
+    {
+        return this->rowCount;
+    }
+    std::size_t cols()
+    {
+        return this->colCount;
+    }
+};

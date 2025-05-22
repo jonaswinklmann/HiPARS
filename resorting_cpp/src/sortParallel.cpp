@@ -67,11 +67,6 @@ void fillDimensionDependantData(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic,
     }
 }
 
-double inline costPerSubMove(double dist)
-{
-    return MOVE_COST_OFFSET_SUBMOVE + MOVE_COST_SCALING_LINEAR * dist + (MOVE_COST_SCALING_SQRT != 0 ? MOVE_COST_SCALING_SQRT * sqrt(dist) : 0);
-}
-
 double approxCostPerMove(double dist1, double dist2)
 {
     if(ALLOW_DIAGONAL_MOVEMENT)
@@ -348,7 +343,7 @@ bool ParallelMove::execute(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eige
     {
         endRows << row << " ";
     }
-    logger->debug("Executing move, rows: ({})->({}), cols: ({})->({})", 
+    logger->info("Executing move, rows: ({})->({}), cols: ({})->({})", 
         startRows.str(), endRows.str(), startCols.str(), endCols.str());
 
     if(firstStep.colSelection.size() != lastStep.colSelection.size() || firstStep.rowSelection.size() != lastStep.rowSelection.size())
@@ -356,26 +351,33 @@ bool ParallelMove::execute(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eige
         logger->error("Move does not have equally many tones at beginning and end");
         return false;
     }
+    if(firstStep.colSelection.size() == 0 || firstStep.rowSelection.size() == 0)
+    {
+        logger->error("No tone selected!");
+        return false;
+    }
 
     for(const auto& step : this->steps)
     {
-        size_t lastIndex = step.rowSelection[0];
+        double lastTone = step.rowSelection[0];
         for(size_t i = 1; i < step.rowSelection.size(); i++)
         {
-            if(step.rowSelection[i] <= lastIndex + DOUBLE_EQUIVALENCE_THRESHOLD)
+            if(step.rowSelection[i] <= lastTone + DOUBLE_EQUIVALENCE_THRESHOLD)
             {
-                logger->error("Move tones not in correct order!");
+                logger->error("Move tones not in correct order! {} <= {}", step.rowSelection[i], lastTone);
                 return false;
             }
+            lastTone = step.rowSelection[i];
         }
-        lastIndex = step.colSelection[0];
+        lastTone = step.colSelection[0];
         for(size_t i = 1; i < step.colSelection.size(); i++)
         {
-            if(step.colSelection[i] <= lastIndex + DOUBLE_EQUIVALENCE_THRESHOLD)
+            if(step.colSelection[i] <= lastTone + DOUBLE_EQUIVALENCE_THRESHOLD)
             {
-                logger->error("Move tones not in correct order!");
+                logger->error("Move tones not in correct order! {} <= {}", step.colSelection[i], lastTone);
                 return false;
             }
+            lastTone = step.colSelection[i];
         }
     }
 
@@ -392,7 +394,11 @@ bool ParallelMove::execute(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eige
         for(size_t colTone = 0; colTone < firstStep.colSelection.size(); colTone++)
         {
             if(stateArray(roundCoordDown(firstStep.rowSelection[rowTone]),
-                roundCoordDown(firstStep.colSelection[colTone])))
+                roundCoordDown(firstStep.colSelection[colTone])) && 
+                lastStep.rowSelection[rowTone] >= -DOUBLE_EQUIVALENCE_THRESHOLD && 
+                lastStep.rowSelection[rowTone] < stateArray.rows() && 
+                lastStep.colSelection[colTone] >= -DOUBLE_EQUIVALENCE_THRESHOLD && 
+                lastStep.colSelection[colTone] < stateArray.cols())
             {
                 stateArrayCopy(roundCoordDown(lastStep.rowSelection[rowTone]),
                     roundCoordDown(lastStep.colSelection[colTone])) = true;
@@ -540,9 +546,32 @@ std::tuple<std::optional<ParallelMove>,int,double> improveMoveByAddingIndependen
                         {
                             for(size_t innerRow = innerStartIndex; innerRow < innerEndIndex; innerRow++)
                             {
+                                bool allowed = true;
+                                if(!ALLOW_MOVING_EMPTY_TRAP_ONTO_OCCUPIED)
+                                {
+                                    for(double col : end.colSelection)
+                                    {
+                                        if(stateArray(innerRow, roundCoordDown(col)))
+                                        {
+                                            allowed = false;
+                                            break;
+                                        }
+                                    }
+                                }
                                 for(size_t innerCol = innerColStart; innerCol < innerColEnd; innerCol++)
                                 {
-                                    if(!stateArray(innerRow, innerCol))
+                                    if(!ALLOW_MOVING_EMPTY_TRAP_ONTO_OCCUPIED)
+                                    {
+                                        for(double row : end.rowSelection)
+                                        {
+                                            if(stateArray(roundCoordDown(row), innerCol))
+                                            {
+                                                allowed = false;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    if(allowed && !stateArray(innerRow, innerCol))
                                     {
                                         double newCost = baseCost;
                                         double newRowDiff = abs((double)innerRow - (double)outerRow);
@@ -741,6 +770,10 @@ std::tuple<std::optional<ParallelMove>,int,double> improveComplexMove(
                                     additionalFilledVacancies++;
                                 }
                             }
+                            else if(stateArray(innerRow, roundCoordDown(end.colSelection[colIndex])) && !ALLOW_MOVING_EMPTY_TRAP_ONTO_OCCUPIED)
+                            {
+                                allowed = false;
+                            }
                         }
                         if(allowed && additionalFilledVacancies > 0)
                         {
@@ -818,6 +851,10 @@ std::tuple<std::optional<ParallelMove>,int,double> improveComplexMove(
                                 {
                                     additionalFilledVacancies++;
                                 }
+                            }
+                            else if(stateArray(roundCoordDown(end.rowSelection[rowIndex]), innerCol) && !ALLOW_MOVING_EMPTY_TRAP_ONTO_OCCUPIED)
+                            {
+                                allowed = false;
                             }
                         }
                         if(allowed && additionalFilledVacancies > 0)
@@ -1904,7 +1941,6 @@ std::optional<std::vector<ParallelMove>> sortParallel(
     {
         logger = spdlog::basic_logger_mt(config.parallelLoggerName, config.logFileName);
     }
-    logger->set_level(spdlog::level::debug);
 
     std::optional<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> alreadyMoved = std::nullopt;
     if(!ALLOW_MULTIPLE_MOVES_PER_ATOM)

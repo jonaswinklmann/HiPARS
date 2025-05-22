@@ -1,13 +1,13 @@
 from setuptools import setup
 
 setup(
-    name='resorting',
+    name='HiPARS',
     version='0.0.1',    
     description='Package for sorting arrays of neutral atoms',
-    url='https://github.com/jonaswinklmann/resorting',
+    url='https://github.com/jonaswinklmann/hipars',
     author='Jonas Winklmann',
     author_email='jonas.winklmann@tum.de',
-    packages=['resorting'],
+    packages=['hipars'],
     install_requires=['numpy'],
     license_files='LICENSE',
     classifiers=[

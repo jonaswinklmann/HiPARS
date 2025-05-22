@@ -3,6 +3,7 @@
 #include <pybind11/attr.h>
 #include "sortSequentiallyByRow.hpp"
 #include "sortParallel.hpp"
+#include "sortLatticeGeometries.hpp"
 #include "config.hpp"
 
 namespace py = pybind11;
@@ -29,15 +30,6 @@ PYBIND11_MODULE(resorting_cpp, m) {
     :list[double]: List of column tones to activate at this step
 )pbdoc");
 
-    py::enum_<Direction>(m, "Direction", R"pbdoc(
-    An enum holding the different potential starting AOD directions.
-)pbdoc")
-    .value("HOR", Direction::HOR)
-    .value("VER", Direction::VER)
-    .value("NONE", Direction::NONE)
-    .value("DIAG", Direction::DIAG)
-    .export_values();
-
     py::class_<Move>(m, "Move", R"pbdoc(
     A class holding information about a sequential move.
 )pbdoc")
@@ -47,9 +39,6 @@ PYBIND11_MODULE(resorting_cpp, m) {
 )pbdoc")
     .def_readwrite("distance", &Move::distance, R"pbdoc(
     :double: Total move length
-)pbdoc")
-    .def_readwrite("init_dir", &Move::init_dir, R"pbdoc(
-    :class:`.Direction`: Initial move direction
 )pbdoc");
 
     py::class_<Config, std::unique_ptr<Config, py::nodelete>>(m, "Config", R"pbdoc(
@@ -101,5 +90,25 @@ PYBIND11_MODULE(resorting_cpp, m) {
     :type compZoneColEnd: int
     :return: A list of moves to sort array or None if sorting has failed.
     :rtype: list[ParallelMove] | None
+)pbdoc");
+
+m.def("sortLatticeGeometriesParallel", &sortLatticeGeometriesParallel, "A function that sorts an array of atoms in parallel", py::arg("stateArray"), 
+    py::arg("compZoneRowStart"), py::arg("compZoneRowEnd"), py::arg("compZoneColStart"), py::arg("compZoneColEnd"), py::arg("targetGeometry"), R"pbdoc(
+A function that sorts atoms in a lattice in parallel towards a given geometry
+
+:param stateArray: The array of boolean values to be sorted
+:type stateArray: numpy.ndarray[bool[m, n], flags.writeable]
+:param compZoneRowStart: Start row of computational zone (inclusive)
+:type compZoneRowStart: int
+:param compZoneRowEnd: End row of computational zone (exclusive)
+:type compZoneRowEnd: int
+:param compZoneColStart: Start column of computational zone (inclusive)
+:type compZoneColStart: int
+:param compZoneColEnd: End column of computational zone (exclusive)
+:type compZoneColEnd: int
+:param targetGeometry: Array of boolean values of size (compZoneRowEnd - compZoneRowStart) x (compZoneColEnd - compZoneColStart) specifying target occupancy
+:type targetGeometry: numpy.ndarray[bool[m, n], flags.writeable]
+:return: A list of moves to sort array or None if sorting has failed.
+:rtype: list[ParallelMove] | None
 )pbdoc");
 };

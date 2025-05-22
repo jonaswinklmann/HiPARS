@@ -96,8 +96,7 @@ bool moveAtomVertically(std::vector<Move>& ml, size_t border[4], StateArrayAcces
     Move m
     {
         .sites_list = sites_list,
-        .distance = (double)abs((int)targetRow - (int)sourceRow.value()),
-        .init_dir = Direction::VER
+        .distance = (double)abs((int)targetRow - (int)sourceRow.value())
     };
     ml.push_back(std::move(m));
 
@@ -135,8 +134,7 @@ bool moveAtomHorizontally(std::vector<Move>& ml, size_t border[4], StateArrayAcc
             Move m
             {
                 .sites_list = sites_list,
-                .distance = (double)abs((int)targetCol - (int)tmpCol),
-                .init_dir = Direction::HOR
+                .distance = (double)abs((int)targetCol - (int)tmpCol)
             };
             ml.push_back(std::move(m));
 
@@ -161,8 +159,7 @@ bool moveAtomHorizontally(std::vector<Move>& ml, size_t border[4], StateArrayAcc
             Move m
             {
                 .sites_list = sites_list,
-                .distance = (double)abs((int)targetCol - (int)tmpCol) + (double)abs((int)rowWithAtom - (int)targetRow),
-                .init_dir = Direction::VER
+                .distance = (double)abs((int)targetCol - (int)tmpCol) + (double)abs((int)rowWithAtom - (int)targetRow)
             };
             ml.push_back(std::move(m));
 
@@ -982,10 +979,17 @@ bool mainSortingLoop(std::vector<Move>& ml, StateArrayAccessor& stateArray, size
     return true;
 }
 
-bool sortSequentiallyByRowCA(std::vector<Move>& ml, size_t rows, size_t cols, bool** stateArray, size_t compZone[4], std::shared_ptr<spdlog::logger> logger)
+bool sortSequentiallyByRowC1D(std::vector<Move>& ml, size_t rows, size_t cols, bool* stateArray, size_t compZone[4], std::shared_ptr<spdlog::logger> logger)
 {
     size_t compZoneExclusive[4] = {compZone[0], compZone[1] + 1, compZone[2], compZone[3] + 1};
-    CStyleStateArrayAccessor stateArrayAccessor(stateArray, rows, cols);
+    CStyle1DStateArrayAccessor stateArrayAccessor(stateArray, rows, cols);
+    return mainSortingLoop(ml, stateArrayAccessor, compZoneExclusive, logger);
+}
+
+bool sortSequentiallyByRowC2D(std::vector<Move>& ml, size_t rows, size_t cols, bool** stateArray, size_t compZone[4], std::shared_ptr<spdlog::logger> logger)
+{
+    size_t compZoneExclusive[4] = {compZone[0], compZone[1] + 1, compZone[2], compZone[3] + 1};
+    CStyle2DStateArrayAccessor stateArrayAccessor(stateArray, rows, cols);
     return mainSortingLoop(ml, stateArrayAccessor, compZoneExclusive, logger);
 }
 

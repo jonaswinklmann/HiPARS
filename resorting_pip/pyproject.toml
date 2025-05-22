@@ -1,0 +1,10 @@
+# pyproject.toml
+[project]
+name = "HiPARS"
+version = "0.0.1"
+dependencies = []
+[build-system]
+requires = ["setuptools >= 42.0.0", "numpy"]
+build-backend = "setuptools.build_meta"
+[tool.setuptools.package-data]
+hipars = ["*.so", "*.dll"]
