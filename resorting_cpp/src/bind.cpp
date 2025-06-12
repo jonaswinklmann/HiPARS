@@ -30,14 +30,14 @@ PYBIND11_MODULE(resorting_cpp, m) {
     :list[double]: List of column tones to activate at this step
 )pbdoc");
 
-    py::class_<Move>(m, "Move", R"pbdoc(
+    py::class_<SequentialMove>(m, "SequentialMove", R"pbdoc(
     A class holding information about a sequential move.
 )pbdoc")
     .def(py::init())
-    .def_readwrite("sites_list", &Move::sites_list, R"pbdoc(
+    .def_readwrite("sites_list", &SequentialMove::sites_list, R"pbdoc(
     :list[(double,double)]: Coordinates of movable tweezer at each step
 )pbdoc")
-    .def_readwrite("distance", &Move::distance, R"pbdoc(
+    .def_readwrite("distance", &SequentialMove::distance, R"pbdoc(
     :double: Total move length
 )pbdoc");
 

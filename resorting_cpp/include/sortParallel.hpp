@@ -7,7 +7,7 @@
 #define MOVE_COST_OFFSET 150
 #define MOVE_COST_OFFSET_SUBMOVE 0
 #define MOVE_COST_SCALING_SQRT 0
-#define MOVE_COST_SCALING_LINEAR 5
+#define MOVE_COST_SCALING_LINEAR 0
 
 #define MAX_MULTI_ITER_COUNT 100
 
@@ -36,10 +36,10 @@ public:
     std::vector<Step> steps;
     ParallelMove() : steps() {};
     static ParallelMove fromStartAndEnd(
-        py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>& stateArray,
+        StateArrayAccessor& stateArray,
         ParallelMove::Step start, ParallelMove::Step end, std::shared_ptr<spdlog::logger> logger);
     double cost();
-    bool execute(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>& stateArray, std::shared_ptr<spdlog::logger> logger,
+    bool execute(StateArrayAccessor& stateArray, std::shared_ptr<spdlog::logger> logger,
         std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>> alreadyMoved = std::nullopt);
 };
 

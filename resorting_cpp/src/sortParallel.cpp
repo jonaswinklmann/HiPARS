@@ -26,7 +26,7 @@ size_t roundCoordDown(double coord)
     return (size_t)(coord + 0.25);
 }
 
-bool& accessStateArray(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>& stateArray,
+bool& accessStateArrayDim(StateArrayAccessor& stateArray,
     size_t i, size_t j, bool rowFirst)
 {
     if(rowFirst)
@@ -39,7 +39,7 @@ bool& accessStateArray(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::D
     }
 }
 
-void fillDimensionDependantData(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>& stateArray, 
+void fillDimensionDependantData(StateArrayAccessor& stateArray, 
     size_t compZone[4], bool rowFirst, size_t outerDimCompZone[2], size_t innerDimCompZone[2],
     size_t& outerSize, size_t& innerSize, unsigned int& outerAODLimit, unsigned int& innerAODLimit)
 {
@@ -114,7 +114,7 @@ double approxCostPerMove(double dist1, double dist2)
     }
 }
 
-bool fillSteps(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>& stateArray, 
+bool fillSteps(StateArrayAccessor& stateArray, 
     ParallelMove::Step& start, ParallelMove::Step& end, ParallelMove::Step& step1, ParallelMove::Step& step2, 
     bool rowFirst, double& maxDist, std::shared_ptr<spdlog::logger> logger)
 {
@@ -162,7 +162,7 @@ bool fillSteps(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, 
             {
                 size_t row = roundCoordDown(startRow);
                 double col = (*otherStart)[j];
-                if(accessStateArray(stateArray, row, roundCoordDown(col), rowFirst))
+                if(accessStateArrayDim(stateArray, row, roundCoordDown(col), rowFirst))
                 {
                     double endCol = (*otherEnd)[j];
                     int colStep = abs(endCol - col) > DOUBLE_EQUIVALENCE_THRESHOLD ? (signbit(endCol - col) ? -1 : 1) : 0;
@@ -171,7 +171,7 @@ bool fillSteps(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, 
                     // If either has at least one more step to go (the other will be zero)
                     for(; (endCol - col) * colStep >= 1 - DOUBLE_EQUIVALENCE_THRESHOLD; col += colStep)
                     {
-                        if(accessStateArray(stateArray, row, roundCoordDown(col), rowFirst) && 
+                        if(accessStateArrayDim(stateArray, row, roundCoordDown(col), rowFirst) && 
                             !orderedDblVecContainsElem(*otherStart, col))
                         {
                             directMove = false;
@@ -197,7 +197,7 @@ bool fillSteps(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, 
 }
 
 ParallelMove ParallelMove::fromStartAndEnd(
-    py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>& stateArray,
+    StateArrayAccessor& stateArray,
     ParallelMove::Step start, ParallelMove::Step end, std::shared_ptr<spdlog::logger> logger)
 {
     ParallelMove move;
@@ -314,13 +314,11 @@ double ParallelMove::cost()
     return cost;
 }
 
-bool ParallelMove::execute(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &stateArray, std::shared_ptr<spdlog::logger> logger,
+bool ParallelMove::execute(StateArrayAccessor& stateArray, std::shared_ptr<spdlog::logger> logger,
     std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>> alreadyMoved)
 {
     const auto& firstStep = this->steps.front();
     const auto& lastStep = this->steps.back();
-
-    Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> stateArrayCopy = stateArray;
 
     std::stringstream startCols;
     std::stringstream endCols;
@@ -381,41 +379,48 @@ bool ParallelMove::execute(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eige
         }
     }
 
+    std::vector<std::tuple<double,double,bool>> writeQueue;
+    double rowMax = (double)stateArray.rows() - 1 + DOUBLE_EQUIVALENCE_THRESHOLD;
+    double colMax = (double)stateArray.cols() - 1 + DOUBLE_EQUIVALENCE_THRESHOLD;
     for(size_t rowTone = 0; rowTone < firstStep.rowSelection.size(); rowTone++)
     {
         for(size_t colTone = 0; colTone < firstStep.colSelection.size(); colTone++)
         {
-            stateArrayCopy(roundCoordDown(firstStep.rowSelection[rowTone]),
-                roundCoordDown(firstStep.colSelection[colTone])) = false;
-        }
-    }
-    for(size_t rowTone = 0; rowTone < firstStep.rowSelection.size(); rowTone++)
-    {
-        for(size_t colTone = 0; colTone < firstStep.colSelection.size(); colTone++)
-        {
-            if(stateArray(roundCoordDown(firstStep.rowSelection[rowTone]),
-                roundCoordDown(firstStep.colSelection[colTone])) && 
-                lastStep.rowSelection[rowTone] >= -DOUBLE_EQUIVALENCE_THRESHOLD && 
-                lastStep.rowSelection[rowTone] < stateArray.rows() && 
-                lastStep.colSelection[colTone] >= -DOUBLE_EQUIVALENCE_THRESHOLD && 
-                lastStep.colSelection[colTone] < stateArray.cols())
+            if(firstStep.rowSelection[rowTone] >= -DOUBLE_EQUIVALENCE_THRESHOLD && 
+                firstStep.rowSelection[rowTone] <= rowMax && 
+                firstStep.colSelection[colTone] >= -DOUBLE_EQUIVALENCE_THRESHOLD && 
+                firstStep.colSelection[colTone] <= colMax)
             {
-                stateArrayCopy(roundCoordDown(lastStep.rowSelection[rowTone]),
-                    roundCoordDown(lastStep.colSelection[colTone])) = true;
-                if(alreadyMoved.has_value())
+                writeQueue.push_back(std::tuple(firstStep.rowSelection[rowTone], 
+                    firstStep.colSelection[colTone], false));
+
+                if(stateArray(roundCoordDown(firstStep.rowSelection[rowTone]),
+                    roundCoordDown(firstStep.colSelection[colTone])) && 
+                    lastStep.rowSelection[rowTone] >= -DOUBLE_EQUIVALENCE_THRESHOLD && 
+                    lastStep.rowSelection[rowTone] <= rowMax && 
+                    lastStep.colSelection[colTone] >= -DOUBLE_EQUIVALENCE_THRESHOLD && 
+                    lastStep.colSelection[colTone] <= colMax)
                 {
-                    alreadyMoved.value()(roundCoordDown(lastStep.rowSelection[rowTone]),
-                        roundCoordDown(lastStep.colSelection[colTone])) = true;
+                    writeQueue.push_back(std::tuple(lastStep.rowSelection[rowTone], 
+                        lastStep.colSelection[colTone], true));
+                    if(alreadyMoved.has_value())
+                    {
+                        alreadyMoved.value()(roundCoordDown(lastStep.rowSelection[rowTone]),
+                            roundCoordDown(lastStep.colSelection[colTone])) = true;
+                    }
                 }
             }
         }
     }
-    stateArray = stateArrayCopy;
+    for(const auto& [row,col,val] : writeQueue)
+    {
+        stateArray(roundCoordDown(row), roundCoordDown(col)) = val;
+    }
     return true;
 }
 
 std::tuple<std::optional<ParallelMove>,int,double> improveMoveByAddingIndependentAtom(
-    py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>& stateArray, 
+    StateArrayAccessor& stateArray, 
     size_t compZone[4], std::shared_ptr<spdlog::logger> logger, ParallelMove move, 
     std::optional<double> cost, std::optional<unsigned int> filledVacancies,
     std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>> alreadyMoved)
@@ -651,7 +656,7 @@ std::tuple<std::optional<ParallelMove>,int,double> improveMoveByAddingIndependen
 }
 
 std::tuple<std::optional<ParallelMove>,int,double> improveComplexMove(
-    py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>& stateArray, 
+    StateArrayAccessor& stateArray, 
     size_t compZone[4], std::shared_ptr<spdlog::logger> logger, ParallelMove move, 
     std::optional<double> cost, std::optional<unsigned int> filledVacancies,
     std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>> alreadyMoved)
@@ -926,7 +931,7 @@ std::tuple<std::optional<ParallelMove>,int,double> improveComplexMove(
     return std::tuple(std::move(improvedMove), filledVacancies.value(), bestCostPerFilledVacancy);
 }
 
-std::pair<double, std::optional<ParallelMove>> checkComplexMoveCost(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>& stateArray, 
+std::pair<double, std::optional<ParallelMove>> checkComplexMoveCost(StateArrayAccessor& stateArray, 
     size_t compZone[4], std::shared_ptr<spdlog::logger> logger, RowBitMask& sourceBitMask, RowBitMask& targetBitMask, 
     bool rowFirst, size_t colDimCompZone[2], size_t cols, unsigned int maxColCount, std::optional<double> bestCostPerFilledGap)
 {
@@ -992,7 +997,7 @@ std::pair<double, std::optional<ParallelMove>> checkComplexMoveCost(py::EigenDRe
             }
         }
 
-        for(unsigned int atomsFromLeft = minFromLeft; atomsFromLeft <= maxFromLeft; atomsFromLeft++)
+        for(unsigned int atomsFromLeft = minFromLeft; (int)atomsFromLeft <= maxFromLeft; atomsFromLeft++)
         {
             unsigned int maxDist = 0;
             for(size_t atomIndex = 0; atomIndex < atomsFromLeft; atomIndex++)
@@ -1090,7 +1095,7 @@ bool stopFurtherMoveInvestigationAtRowCount(unsigned int rowCount, unsigned int 
     }
 }
 
-std::tuple<std::optional<ParallelMove>,int,double> moveSeveralRowsAndCols(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>& stateArray, 
+std::tuple<std::optional<ParallelMove>,int,double> moveSeveralRowsAndCols(StateArrayAccessor& stateArray, 
     size_t compZone[4], std::shared_ptr<spdlog::logger> logger,
     std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>> alreadyMoved)
 {
@@ -1139,7 +1144,7 @@ std::tuple<std::optional<ParallelMove>,int,double> moveSeveralRowsAndCols(py::Ei
                 {
                     index += colDimCompZone[1] - colDimCompZone[0];
                 }
-                outerRowBitMask.set(j, accessStateArray(stateArray, i, index, rowFirst));
+                outerRowBitMask.set(j, accessStateArrayDim(stateArray, i, index, rowFirst));
             }
             bitMaskByOuterRow.push_back(outerRowBitMask);
             bitMaskOuterVec1.push_back(std::move(outerRowBitMask));
@@ -1148,7 +1153,7 @@ std::tuple<std::optional<ParallelMove>,int,double> moveSeveralRowsAndCols(py::Ei
                 RowBitMask innerRowBitMask(colDimCompZone[1] - colDimCompZone[0], i);
                 for(size_t j = colDimCompZone[0]; j < colDimCompZone[1]; j++)
                 {
-                    innerRowBitMask.set(j - colDimCompZone[0], !accessStateArray(stateArray, i, j, rowFirst));
+                    innerRowBitMask.set(j - colDimCompZone[0], !accessStateArrayDim(stateArray, i, j, rowFirst));
                 }
                 bitMaskByInnerRow.push_back(std::make_shared<RowBitMask>(innerRowBitMask));
                 bitMaskInnerVec1.push_back(std::pair(innerRowBitMask.bitsSet(), std::make_shared<RowBitMask>(innerRowBitMask)));
@@ -1299,7 +1304,7 @@ std::tuple<std::optional<ParallelMove>,int,double> moveSeveralRowsAndCols(py::Ei
     }
 }
 
-std::tuple<std::optional<ParallelMove>,int,double> fillColumnHorizontally(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>& stateArray, 
+std::tuple<std::optional<ParallelMove>,int,double> fillColumnHorizontally(StateArrayAccessor& stateArray, 
     size_t compZone[4], std::shared_ptr<spdlog::logger> logger,
     std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>>)
 {
@@ -1328,7 +1333,7 @@ std::tuple<std::optional<ParallelMove>,int,double> fillColumnHorizontally(py::Ei
             std::vector<size_t> emptySitesInCol;
             for(size_t i = rowDimCompZone[0]; i < rowDimCompZone[1]; i++)
             {
-                if(!accessStateArray(stateArray, i, j, rowFirst))
+                if(!accessStateArrayDim(stateArray, i, j, rowFirst))
                 {
                     emptySitesInCol.push_back(i);
                 }
@@ -1359,7 +1364,7 @@ std::tuple<std::optional<ParallelMove>,int,double> fillColumnHorizontally(py::Ei
 
             for(size_t i = 0; i < rows; i++)
             {
-                if(accessStateArray(stateArray, i, borderCol, rowFirst))
+                if(accessStateArrayDim(stateArray, i, borderCol, rowFirst))
                 {
                     atomLocations.push_back(i);
                 }
@@ -1449,7 +1454,7 @@ std::tuple<std::optional<ParallelMove>,int,double> fillColumnHorizontally(py::Ei
     return std::tuple(bestMove, bestFillableGaps, bestCostPerFilledGap);
 }
 
-std::tuple<std::optional<ParallelMove>,int,double> fillRowThroughSubspace(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>& stateArray, 
+std::tuple<std::optional<ParallelMove>,int,double> fillRowThroughSubspace(StateArrayAccessor& stateArray, 
     size_t compZone[4], std::shared_ptr<spdlog::logger> logger,
     std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>>)
 {
@@ -1492,7 +1497,7 @@ std::tuple<std::optional<ParallelMove>,int,double> fillRowThroughSubspace(py::Ei
         {
             for(size_t j = 0; j < innerSize; j++)
             {
-                if(accessStateArray(stateArray, i, j, rowFirst))
+                if(accessStateArrayDim(stateArray, i, j, rowFirst))
                 {
                     if(j < innerDimCompZone[0])
                     {
@@ -1577,7 +1582,7 @@ std::tuple<std::optional<ParallelMove>,int,double> fillRowThroughSubspace(py::Ei
                         int currentPosition = innerDimCompZone[0] - 1;
                         for(;currentPosition >= 0 && positionsFound < atomsFromLeft; currentPosition--)
                         {
-                            if(accessStateArray(stateArray, iBorder, currentPosition, rowFirst))
+                            if(accessStateArrayDim(stateArray, iBorder, currentPosition, rowFirst))
                             {
                                 distances[atomsFromLeft - positionsFound - 1] = innerDimCompZone[0] - currentPosition;
                                 outerDimStartVector[atomsFromLeft - positionsFound - 1] = (double)currentPosition;
@@ -1586,9 +1591,9 @@ std::tuple<std::optional<ParallelMove>,int,double> fillRowThroughSubspace(py::Ei
                         }
                         positionsFound = 0;
                         currentPosition = innerDimCompZone[1];
-                        for(;currentPosition < innerSize && positionsFound < fillableGaps - atomsFromLeft; currentPosition++)
+                        for(;currentPosition < (int)innerSize && positionsFound < fillableGaps - atomsFromLeft; currentPosition++)
                         {
-                            if(accessStateArray(stateArray, iBorder, currentPosition, rowFirst))
+                            if(accessStateArrayDim(stateArray, iBorder, currentPosition, rowFirst))
                             {
                                 distances[atomsFromLeft + positionsFound] = currentPosition - (innerDimCompZone[1] - 1);
                                 outerDimStartVector[atomsFromLeft + positionsFound] = (double)currentPosition;
@@ -1598,9 +1603,9 @@ std::tuple<std::optional<ParallelMove>,int,double> fillRowThroughSubspace(py::Ei
                         // Now add distances to gaps (from compZone[2])
                         positionsFound = 0;
                         currentPosition = innerDimCompZone[0];
-                        for(;currentPosition < innerDimCompZone[1] && positionsFound < atomsFromLeft; currentPosition++)
+                        for(;currentPosition < (int)innerDimCompZone[1] && positionsFound < atomsFromLeft; currentPosition++)
                         {
-                            if(!accessStateArray(stateArray, iTarget, currentPosition, rowFirst))
+                            if(!accessStateArrayDim(stateArray, iTarget, currentPosition, rowFirst))
                             {
                                 distances[positionsFound] += currentPosition - innerDimCompZone[0];
                                 outerDimEndVector[positionsFound] = (double)currentPosition;
@@ -1609,9 +1614,9 @@ std::tuple<std::optional<ParallelMove>,int,double> fillRowThroughSubspace(py::Ei
                         }
                         positionsFound = 0;
                         currentPosition = innerDimCompZone[1] - 1;
-                        for(;currentPosition >= innerDimCompZone[0] && positionsFound < fillableGaps - atomsFromLeft; currentPosition--)
+                        for(;currentPosition >= (int)innerDimCompZone[0] && positionsFound < fillableGaps - atomsFromLeft; currentPosition--)
                         {
-                            if(!accessStateArray(stateArray, iTarget, currentPosition, rowFirst))
+                            if(!accessStateArrayDim(stateArray, iTarget, currentPosition, rowFirst))
                             {
                                 distances[fillableGaps - positionsFound - 1] += innerDimCompZone[1] - 1 - currentPosition;
                                 outerDimEndVector[fillableGaps - positionsFound - 1] = (double)currentPosition;
@@ -1652,7 +1657,7 @@ std::tuple<std::optional<ParallelMove>,int,double> fillRowThroughSubspace(py::Ei
     return std::tuple(bestMove, bestFillableGaps, bestCostPerFilledGap);
 }
 
-std::tuple<std::optional<ParallelMove>,int,double> fillRowSidesDirectly(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>& stateArray, 
+std::tuple<std::optional<ParallelMove>,int,double> fillRowSidesDirectly(StateArrayAccessor& stateArray, 
     size_t compZone[4], std::shared_ptr<spdlog::logger> logger,
     std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>> alreadyMoved)
 {
@@ -1674,14 +1679,14 @@ std::tuple<std::optional<ParallelMove>,int,double> fillRowSidesDirectly(py::Eige
             unsigned int borderAtomsLeft = 0, borderAtomsRight = 0;
             for(size_t j = 0; j < innerDimCompZone[0]; j++)
             {
-                if(accessStateArray(stateArray, i, j, rowFirst))
+                if(accessStateArrayDim(stateArray, i, j, rowFirst))
                 {
                     borderAtomsLeft++;
                 }
             }
             for(size_t j = innerDimCompZone[1]; j < innerSize; j++)
             {
-                if(accessStateArray(stateArray, i, j, rowFirst))
+                if(accessStateArrayDim(stateArray, i, j, rowFirst))
                 {
                     borderAtomsRight++;
                 }
@@ -1698,7 +1703,7 @@ std::tuple<std::optional<ParallelMove>,int,double> fillRowSidesDirectly(py::Eige
                 {
                     for(size_t j = leftPosition; j <= rightPosition; j++)
                     {
-                        if(!accessStateArray(stateArray, i, j, rowFirst))
+                        if(!accessStateArrayDim(stateArray, i, j, rowFirst))
                         {
                             lowestDistToNextGap = j - leftPosition + 1;
                             newPosition = j + 1;
@@ -1710,7 +1715,7 @@ std::tuple<std::optional<ParallelMove>,int,double> fillRowSidesDirectly(py::Eige
                 {
                     for(size_t j = rightPosition; j >= leftPosition; j--)
                     {
-                        if(!accessStateArray(stateArray, i, j, rowFirst))
+                        if(!accessStateArrayDim(stateArray, i, j, rowFirst))
                         {
                             if(!lowestDistToNextGap.has_value() || (rightPosition - j < lowestDistToNextGap.value()))
                             {
@@ -1775,11 +1780,11 @@ std::tuple<std::optional<ParallelMove>,int,double> fillRowSidesDirectly(py::Eige
                 int j = leftPosition - 1;
                 for(; j >= 0 && atomsLeftRemaining > 0; j--)
                 {
-                    if(j >= innerDimCompZone[0])
+                    if(j >= (int)innerDimCompZone[0])
                     {
                         outerDimEndVector[j - innerDimCompZone[0]] = j;
                     }
-                    if(accessStateArray(stateArray, i, j, rowFirst))
+                    if(accessStateArrayDim(stateArray, i, j, rowFirst))
                     {
                         atomsLeftRemaining--;
                         outerDimStartVector[atomsLeftRemaining] = j;
@@ -1787,13 +1792,13 @@ std::tuple<std::optional<ParallelMove>,int,double> fillRowSidesDirectly(py::Eige
                 }
                 int distanceLeft = (int)innerDimCompZone[0] - (int)j;
                 j = rightPosition + 1;
-                for(; j < innerSize && atomsRightRemaining > 0; j++)
+                for(; j < (int)innerSize && atomsRightRemaining > 0; j++)
                 {
-                    if(j < innerDimCompZone[1])
+                    if(j < (int)innerDimCompZone[1])
                     {
                         outerDimEndVector[atomsFromLeft + atomsFromRight - (innerDimCompZone[1] - j)] = j;
                     }
-                    if(accessStateArray(stateArray, i, j, rowFirst))
+                    if(accessStateArrayDim(stateArray, i, j, rowFirst))
                     {
                         atomsRightRemaining--;
                         outerDimStartVector[atomsFromLeft + atomsFromRight - atomsRightRemaining - 1] = j;
@@ -1848,7 +1853,7 @@ std::tuple<std::optional<ParallelMove>,int,double> fillRowSidesDirectly(py::Eige
     return std::tuple(bestMove, bestFillableGaps, bestCostPerFilledGap);
 }
 
-bool analyzeArray(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>& stateArray, 
+bool analyzeArray(StateArrayAccessor& stateArray, 
     size_t compZone[4], unsigned int& vacancies, std::shared_ptr<spdlog::logger> logger, bool printArray)
 {
     vacancies = 0;
@@ -1862,17 +1867,11 @@ bool analyzeArray(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynami
             }
         }
     }
-    if(printArray)
-    {
-        std::stringstream arrayString;
-        arrayString << stateArray;
-        logger->debug("\n{}", arrayString.str());
-    }
     logger->debug("{} vacancies (analyzeArray)", vacancies);
     return true;
 }
 
-bool findNextMove(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>& stateArray, 
+bool findNextMove(StateArrayAccessor& stateArray, 
     size_t compZone[4], std::vector<ParallelMove>& moves, bool& sorted, unsigned int& vacancies, std::shared_ptr<spdlog::logger> logger,
     std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>> alreadyMoved)
 {
@@ -1931,17 +1930,11 @@ bool findNextMove(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynami
     return true;
 }
 
-std::optional<std::vector<ParallelMove>> sortParallel(
-    py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>& stateArray, 
-    size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd)
+std::optional<std::vector<ParallelMove>> sortParallelInternal(
+    StateArrayAccessor& stateArray, 
+    size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd,
+    std::shared_ptr<spdlog::logger> logger)
 {
-    std::shared_ptr<spdlog::logger> logger;
-    Config& config = Config::getInstance();
-    if((logger = spdlog::get(config.parallelLoggerName)) == nullptr)
-    {
-        logger = spdlog::basic_logger_mt(config.parallelLoggerName, config.logFileName);
-    }
-
     std::optional<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> alreadyMoved = std::nullopt;
     if(!ALLOW_MULTIPLE_MOVES_PER_ATOM)
     {
@@ -1982,4 +1975,20 @@ std::optional<std::vector<ParallelMove>> sortParallel(
         }
     }
     return moves;
+}
+
+std::optional<std::vector<ParallelMove>> sortParallel(
+    py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>& stateArray, 
+    size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd)
+{
+    std::shared_ptr<spdlog::logger> logger;
+    Config& config = Config::getInstance();
+    if((logger = spdlog::get(config.parallelLoggerName)) == nullptr)
+    {
+        logger = spdlog::basic_logger_mt(config.parallelLoggerName, config.logFileName);
+    }
+
+    EigenArrayStateArrayAccessor stateArrayAccessor(stateArray);
+    return sortParallelInternal(stateArrayAccessor, compZoneRowStart, 
+        compZoneRowEnd, compZoneColStart, compZoneColEnd, logger);
 }

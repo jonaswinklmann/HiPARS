@@ -17,9 +17,12 @@ typedef Eigen::Stride<Eigen::Dynamic, Eigen::Dynamic> StrideDyn;
 class StateArrayAccessor
 {
 public:
+    virtual std::unique_ptr<StateArrayAccessor> copy() const = 0;
+    virtual void operator=(const StateArrayAccessor& other) = 0;
+    virtual const bool& operator()(std::size_t row, std::size_t col) const = 0;
     virtual bool& operator()(std::size_t row, std::size_t col) = 0;
-    virtual std::size_t rows() = 0;
-    virtual std::size_t cols() = 0;
+    virtual std::size_t rows() const = 0;
+    virtual std::size_t cols() const = 0;
 };
 
 class RowBitMask
@@ -162,15 +165,41 @@ private:
     py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> stateArray;
 public:
     EigenArrayStateArrayAccessor(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> array) : stateArray(array) {}
+    std::unique_ptr<StateArrayAccessor> copy() const
+    {
+        Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> arrayCopy = stateArray;
+        return std::unique_ptr<EigenArrayStateArrayAccessor>(new EigenArrayStateArrayAccessor(arrayCopy));
+    }
+    void operator=(const StateArrayAccessor& other)
+    {
+        if(this->rows() != other.rows() || this->cols() != other.cols())
+        {
+            throw std::invalid_argument("Array cannot be assigned due to different sizes");
+        }
+        else
+        {
+            for(size_t r = 0; r < this->rows(); r++)
+            {
+                for(size_t c = 0; c < this->cols(); c++)
+                {
+                    this->stateArray(r,c) = other(r,c);
+                }
+            }
+        }
+    }
+    const bool& operator()(std::size_t row, std::size_t col) const
+    {
+        return this->stateArray(row,col);
+    }
     bool& operator()(std::size_t row, std::size_t col)
     {
         return this->stateArray(row,col);
     }
-    std::size_t rows()
+    std::size_t rows() const
     {
         return this->stateArray.rows();
     }
-    std::size_t cols()
+    std::size_t cols() const
     {
         return this->stateArray.cols();
     }
@@ -179,19 +208,65 @@ public:
 class CStyle2DStateArrayAccessor : public StateArrayAccessor
 {
 private:
+    const bool dataOwned;
     bool **stateArray;
     std::size_t rowCount, colCount;
+    CStyle2DStateArrayAccessor(const CStyle2DStateArrayAccessor& other) : dataOwned(true), stateArray(nullptr), rowCount(other.rowCount), colCount(other.colCount)
+    {
+        stateArray = new bool*[rowCount];
+        for(size_t i = 0; i < rowCount; i++)
+        {
+            stateArray[i] = new bool[colCount];
+        }
+    }
 public:
-    CStyle2DStateArrayAccessor(bool **array, std::size_t rows, std::size_t cols) : stateArray(array), rowCount(rows), colCount(cols) {}
+    CStyle2DStateArrayAccessor(bool **array, std::size_t rows, std::size_t cols) : dataOwned(false), stateArray(array), rowCount(rows), colCount(cols) {}
+    std::unique_ptr<StateArrayAccessor> copy() const
+    {
+        CStyle2DStateArrayAccessor *accessorCopy = new CStyle2DStateArrayAccessor(*this);
+        return std::unique_ptr<CStyle2DStateArrayAccessor>(accessorCopy);
+    }
+    ~CStyle2DStateArrayAccessor()
+    {
+        if(dataOwned)
+        {
+            for(size_t i = 0; i < rowCount; i++)
+            {
+                delete[] stateArray[i];
+            }
+            delete[] stateArray;
+        }
+    }
+    void operator=(const StateArrayAccessor& other)
+    {
+        if(this->rowCount != other.rows() || this->colCount != other.cols())
+        {
+            throw std::invalid_argument("Array cannot be assigned due to different sizes");
+        }
+        else
+        {
+            for(size_t r = 0; r < this->rows(); r++)
+            {
+                for(size_t c = 0; c < this->cols(); c++)
+                {
+                    this->stateArray[r][c] = other(r,c);
+                }
+            }
+        }
+    }
+    const bool& operator()(std::size_t row, std::size_t col) const
+    {
+        return this->stateArray[row][col];
+    }
     bool& operator()(std::size_t row, std::size_t col)
     {
         return this->stateArray[row][col];
     }
-    std::size_t rows()
+    std::size_t rows() const
     {
         return this->rowCount;
     }
-    std::size_t cols()
+    std::size_t cols() const
     {
         return this->colCount;
     }
@@ -200,19 +275,57 @@ public:
 class CStyle1DStateArrayAccessor : public StateArrayAccessor
 {
 private:
+    const bool dataOwned;
     bool *stateArray;
     std::size_t rowCount, colCount;
+    CStyle1DStateArrayAccessor(const CStyle1DStateArrayAccessor& other) : dataOwned(true), stateArray(nullptr), rowCount(other.rowCount), colCount(other.colCount)
+    {
+        stateArray = new bool[rowCount * colCount];
+    }
 public:
-    CStyle1DStateArrayAccessor(bool *array, std::size_t rows, std::size_t cols) : stateArray(array), rowCount(rows), colCount(cols) {}
+    CStyle1DStateArrayAccessor(bool *array, std::size_t rows, std::size_t cols) : dataOwned(false), stateArray(array), rowCount(rows), colCount(cols) {}
+    std::unique_ptr<StateArrayAccessor> copy() const
+    {
+        CStyle1DStateArrayAccessor *accessorCopy = new CStyle1DStateArrayAccessor(*this);
+        return std::unique_ptr<CStyle1DStateArrayAccessor>(accessorCopy);
+    }
+    ~CStyle1DStateArrayAccessor()
+    {
+        if(dataOwned)
+        {
+            delete[] stateArray;
+        }
+    }
+    void operator=(const StateArrayAccessor& other)
+    {
+        if(this->rowCount != other.rows() || this->colCount != other.cols())
+        {
+            throw std::invalid_argument("Array cannot be assigned due to different sizes");
+        }
+        else
+        {
+            for(size_t r = 0; r < this->rows(); r++)
+            {
+                for(size_t c = 0; c < this->cols(); c++)
+                {
+                    this->stateArray[r * this->colCount + c] = other(r,c);
+                }
+            }
+        }
+    }
+    const bool& operator()(std::size_t row, std::size_t col) const
+    {
+        return this->stateArray[row * this->colCount + col];
+    }
     bool& operator()(std::size_t row, std::size_t col)
     {
         return this->stateArray[row * this->colCount + col];
     }
-    std::size_t rows()
+    std::size_t rows() const
     {
         return this->rowCount;
     }
-    std::size_t cols()
+    std::size_t cols() const
     {
         return this->colCount;
     }

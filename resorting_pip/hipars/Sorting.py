@@ -44,7 +44,7 @@ class Sorting:
         :raises TypeError: state_array must be numpy bool array
         :raises TypeError: state_array must be dtype bool
         :return: A list of moves to sort array or None if sorting has failed. A move contains .distance, .init_dir, and .sites_list, which is a list of coordinate pairs to traverse
-        :rtype: list[Move], optional
+        :rtype: list[SequentialMove], optional
         """
         if not isinstance(state_array, np.ndarray):
             raise TypeError("state_array must be numpy bool array")

@@ -66,7 +66,7 @@ void findPullPriorities(StateArrayAccessor& stateArray, size_t compZone[4], size
     }
 }
 
-bool moveAtomVertically(std::vector<Move>& ml, size_t border[4], StateArrayAccessor& stateArray, std::shared_ptr<spdlog::logger> logger, 
+bool moveAtomVertically(std::vector<SequentialMove>& ml, size_t border[4], StateArrayAccessor& stateArray, std::shared_ptr<spdlog::logger> logger, 
     unsigned int *atomsPerRow, std::optional<size_t> **nextRowWithAtom, unsigned int *atomsInColumnRemaining[2],
     size_t targetCol, size_t targetRow, int yDir)
 {
@@ -93,7 +93,7 @@ bool moveAtomVertically(std::vector<Move>& ml, size_t border[4], StateArrayAcces
     std::vector<std::pair<double,double>> sites_list;
     sites_list.push_back({sourceRow.value(), targetCol});
     sites_list.push_back({targetRow, targetCol});
-    Move m
+    SequentialMove m
     {
         .sites_list = sites_list,
         .distance = (double)abs((int)targetRow - (int)sourceRow.value())
@@ -111,7 +111,7 @@ bool moveAtomVertically(std::vector<Move>& ml, size_t border[4], StateArrayAcces
     return true;
 }
 
-bool moveAtomHorizontally(std::vector<Move>& ml, size_t border[4], StateArrayAccessor& stateArray, std::shared_ptr<spdlog::logger> logger, 
+bool moveAtomHorizontally(std::vector<SequentialMove>& ml, size_t border[4], StateArrayAccessor& stateArray, std::shared_ptr<spdlog::logger> logger, 
     unsigned int *atomsPerRow, std::optional<size_t> **nextRowWithAtom, unsigned int *atomsInColumnRemaining[2], 
     size_t targetCol, size_t targetRow, int xDir, MoveAtSite *atomSources)
 {
@@ -131,7 +131,7 @@ bool moveAtomHorizontally(std::vector<Move>& ml, size_t border[4], StateArrayAcc
             std::vector<std::pair<double,double>> sites_list;
             sites_list.push_back({targetRow, tmpCol});
             sites_list.push_back({targetRow, targetCol});
-            Move m
+            SequentialMove m
             {
                 .sites_list = sites_list,
                 .distance = (double)abs((int)targetCol - (int)tmpCol)
@@ -156,7 +156,7 @@ bool moveAtomHorizontally(std::vector<Move>& ml, size_t border[4], StateArrayAcc
             sites_list.push_back({rowWithAtom, tmpCol});
             sites_list.push_back({targetRow, tmpCol});
             sites_list.push_back({targetRow, targetCol});
-            Move m
+            SequentialMove m
             {
                 .sites_list = sites_list,
                 .distance = (double)abs((int)targetCol - (int)tmpCol) + (double)abs((int)rowWithAtom - (int)targetRow)
@@ -199,7 +199,7 @@ bool moveAtomHorizontally(std::vector<Move>& ml, size_t border[4], StateArrayAcc
     return false;
 }
 
-bool handleCurrentPosition(std::vector<Move>& ml, size_t border[4], StateArrayAccessor& stateArray, std::shared_ptr<spdlog::logger> logger, 
+bool handleCurrentPosition(std::vector<SequentialMove>& ml, size_t border[4], StateArrayAccessor& stateArray, std::shared_ptr<spdlog::logger> logger, 
     unsigned int *atomsPerRow, std::optional<size_t> **nextRowWithAtom, unsigned int *atomsInColumnRemaining[2], MoveAtSite *atomSources, 
     size_t targetRow, size_t col, int horizontalDirection)
 {
@@ -218,7 +218,7 @@ bool handleCurrentPosition(std::vector<Move>& ml, size_t border[4], StateArrayAc
         atomsInColumnRemaining, col, targetRow, horizontalDirection, atomSources);
 }
 
-bool findAndExecuteMoveOrder(std::vector<Move>& ml, size_t border[4], StateArrayAccessor& stateArray, size_t compZone[4], 
+bool findAndExecuteMoveOrder(std::vector<SequentialMove>& ml, size_t border[4], StateArrayAccessor& stateArray, size_t compZone[4], 
     std::shared_ptr<spdlog::logger> logger, unsigned int *atomsPerRow, std::optional<size_t> **nextRowWithAtom, 
     unsigned int *atomsInColumnRemaining[2], MoveAtSite *atomSources, size_t targetRow, int yDir)
 {
@@ -365,7 +365,7 @@ void removeOwnAtomsFromBuffers(size_t border[4], StateArrayAccessor& stateArray,
     }
 }
 
-bool pullFromBothDirections(std::vector<Move>& ml, size_t border[4], StateArrayAccessor& stateArray, size_t compZone[4], std::shared_ptr<spdlog::logger> logger, 
+bool pullFromBothDirections(std::vector<SequentialMove>& ml, size_t border[4], StateArrayAccessor& stateArray, size_t compZone[4], std::shared_ptr<spdlog::logger> logger, 
     unsigned int *atomsPerRow, std::optional<size_t> **nextRowWithAtom, unsigned int *atomsInColumnRemaining[2], int targetRow, size_t rowsRemainingUpper, 
     size_t rowsRemainingLower, int countFromAbove, int countFromBelow)
 {
@@ -425,7 +425,7 @@ bool pullFromBothDirections(std::vector<Move>& ml, size_t border[4], StateArrayA
     return true;
 }
 
-bool pullFromDirection(std::vector<Move>& ml, size_t border[4], StateArrayAccessor& stateArray, size_t compZone[4], std::shared_ptr<spdlog::logger> logger, 
+bool pullFromDirection(std::vector<SequentialMove>& ml, size_t border[4], StateArrayAccessor& stateArray, size_t compZone[4], std::shared_ptr<spdlog::logger> logger, 
     unsigned int *atomsPerRow, std::optional<size_t> **nextRowWithAtom, unsigned int *atomsInColumnRemaining[2], size_t targetRow, 
     size_t rowsRemaining, int yDir, int count)
 {
@@ -824,7 +824,7 @@ bool findRowToBalanceExcessAtoms(StateArrayAccessor& stateArray,
     return false;
 }
 
-bool mainSortingLoop(std::vector<Move>& ml, StateArrayAccessor& stateArray, size_t compZone[4], std::shared_ptr<spdlog::logger> logger)
+bool mainSortingLoop(std::vector<SequentialMove>& ml, StateArrayAccessor& stateArray, size_t compZone[4], std::shared_ptr<spdlog::logger> logger)
 {
     size_t rows = stateArray.rows();
     size_t cols = stateArray.cols();
@@ -979,21 +979,21 @@ bool mainSortingLoop(std::vector<Move>& ml, StateArrayAccessor& stateArray, size
     return true;
 }
 
-bool sortSequentiallyByRowC1D(std::vector<Move>& ml, size_t rows, size_t cols, bool* stateArray, size_t compZone[4], std::shared_ptr<spdlog::logger> logger)
+bool sortSequentiallyByRowC1D(std::vector<SequentialMove>& ml, size_t rows, size_t cols, bool* stateArray, size_t compZone[4], std::shared_ptr<spdlog::logger> logger)
 {
     size_t compZoneExclusive[4] = {compZone[0], compZone[1] + 1, compZone[2], compZone[3] + 1};
     CStyle1DStateArrayAccessor stateArrayAccessor(stateArray, rows, cols);
     return mainSortingLoop(ml, stateArrayAccessor, compZoneExclusive, logger);
 }
 
-bool sortSequentiallyByRowC2D(std::vector<Move>& ml, size_t rows, size_t cols, bool** stateArray, size_t compZone[4], std::shared_ptr<spdlog::logger> logger)
+bool sortSequentiallyByRowC2D(std::vector<SequentialMove>& ml, size_t rows, size_t cols, bool** stateArray, size_t compZone[4], std::shared_ptr<spdlog::logger> logger)
 {
     size_t compZoneExclusive[4] = {compZone[0], compZone[1] + 1, compZone[2], compZone[3] + 1};
     CStyle2DStateArrayAccessor stateArrayAccessor(stateArray, rows, cols);
     return mainSortingLoop(ml, stateArrayAccessor, compZoneExclusive, logger);
 }
 
-std::optional<std::vector<Move>> sortSequentiallyByRow(
+std::optional<std::vector<SequentialMove>> sortSequentiallyByRow(
     py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>& stateArray, 
     size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd)
 {
@@ -1005,7 +1005,7 @@ std::optional<std::vector<Move>> sortSequentiallyByRow(
     }
     logger->set_level(spdlog::level::debug);
 
-    std::vector<Move> moves;
+    std::vector<SequentialMove> moves;
 
     size_t compZone[4] = {compZoneRowStart, compZoneRowEnd, compZoneColStart, compZoneColEnd};
 
