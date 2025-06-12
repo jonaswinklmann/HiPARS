@@ -1,10 +1,10 @@
-resorting package
+hipars package
 =================
 
-resorting.Sorting module
+hipars.Sorting module
 ------------------------
 
-.. automodule:: resorting.Sorting
+.. automodule:: hipars.Sorting
    :members:
    :undoc-members:
    :show-inheritance:

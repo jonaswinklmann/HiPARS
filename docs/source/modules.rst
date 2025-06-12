@@ -4,5 +4,5 @@ resorting
 .. toctree::
    :maxdepth: 4
    
-   resorting
+   hipars
    resorting_cpp
