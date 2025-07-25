@@ -111,4 +111,24 @@ A function that sorts atoms in a lattice in parallel towards a given geometry
 :return: A list of moves to sort array or None if sorting has failed.
 :rtype: list[ParallelMove] | None
 )pbdoc");
+
+m.def("sortLatticeByRowParallel", &sortLatticeByRowParallel, "A function that sorts an array of atoms in a lattice row by row in parallel", py::arg("stateArray"), 
+    py::arg("compZoneRowStart"), py::arg("compZoneRowEnd"), py::arg("compZoneColStart"), py::arg("compZoneColEnd"), py::arg("targetGeometry"), R"pbdoc(
+A function that sorts atoms in a lattice in parallel towards a given geometry
+
+:param stateArray: The array of boolean values to be sorted
+:type stateArray: numpy.ndarray[bool[m, n], flags.writeable]
+:param compZoneRowStart: Start row of computational zone (inclusive)
+:type compZoneRowStart: int
+:param compZoneRowEnd: End row of computational zone (exclusive)
+:type compZoneRowEnd: int
+:param compZoneColStart: Start column of computational zone (inclusive)
+:type compZoneColStart: int
+:param compZoneColEnd: End column of computational zone (exclusive)
+:type compZoneColEnd: int
+:param targetGeometry: Array of boolean values of size (compZoneRowEnd - compZoneRowStart) x (compZoneColEnd - compZoneColStart) specifying target occupancy
+:type targetGeometry: numpy.ndarray[bool[m, n], flags.writeable]
+:return: A list of moves to sort array or None if sorting has failed.
+:rtype: list[ParallelMove] | None
+)pbdoc");
 };

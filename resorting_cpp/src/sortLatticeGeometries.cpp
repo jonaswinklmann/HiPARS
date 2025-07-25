@@ -6,6 +6,9 @@
 #include <map>
 #include <sstream>
 #include <set>
+#include <chrono>
+#include <omp.h>
+#include <ranges>
 
 #include "config.hpp"
 #include "spdlog/sinks/basic_file_sink.h"
@@ -25,6 +28,13 @@ struct compareOnlyTones
 double pythagorasDist(double d1, double d2)
 {
     return sqrt(d1 * d1 + d2 * d2);
+}
+
+bool isInCompZone(int row, int col, size_t compZoneRowStart, 
+    size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd)
+{
+    return row >= (int)compZoneRowStart && row < (int)compZoneRowEnd && 
+        col >= (int)compZoneColStart && col < (int)compZoneColEnd;
 }
 
 double moveCost(const std::vector<std::tuple<bool,size_t,int>>& path)
@@ -62,7 +72,7 @@ double moveCost(const std::vector<std::tuple<bool,size_t,int>>& path)
     return cost;
 }
 
-Eigen::Array<bool,Eigen::Dynamic,Eigen::Dynamic> generateMask(double distance, double spacingFraction = 1)
+Eigen::Array<bool,Eigen::Dynamic,Eigen::Dynamic> generateMask(double distance, double spacingFraction)
 {
     int maskRowDist = distance / (ROW_SPACING * spacingFraction);
     int maskRows = 2 * maskRowDist + 1;
@@ -159,7 +169,7 @@ std::tuple<Eigen::Array<unsigned int,Eigen::Dynamic,Eigen::Dynamic>, unsigned in
     return std::tuple(labelledPathway, pathwayIndex - 1);
 }
 
-std::vector<std::set<size_t>> findTargetSitesPerPathway(
+std::vector<std::set<std::tuple<size_t,size_t>>> findTargetSitesPerPathway(
     const Eigen::Ref<const Eigen::Array<unsigned int,Eigen::Dynamic,Eigen::Dynamic>>& penalizedPathway, 
     const Eigen::Ref<const Eigen::Array<unsigned int,Eigen::Dynamic,Eigen::Dynamic>>& labelledPathway, 
     std::set<std::tuple<size_t,size_t>>& usableTargetSites,
@@ -170,7 +180,7 @@ std::vector<std::set<size_t>> findTargetSitesPerPathway(
     std::shared_ptr<spdlog::logger> logger)
 {
     auto [labelledPenalizedPathway, pLabelCount] = labelPathway(penalizedPathway);
-    std::vector<std::set<size_t>> targetSitesPerPPathway;
+    std::vector<std::set<std::tuple<size_t,size_t>>> targetSitesPerPPathway;
     targetSitesPerPPathway.resize(pLabelCount);
 
     std::vector<std::set<unsigned int>> pathwaysPerPPathway;
@@ -190,19 +200,18 @@ std::vector<std::set<size_t>> findTargetSitesPerPathway(
                     targetGeometry(r / 2 - compZoneRowStart, c / 2 - compZoneColStart) &&
                     !stateArray(r / 2, c / 2) && usableTargetSites.contains(std::tuple(r / 2, c / 2)))
                 {
-                    targetSitesPerPPathway[pPathwayIndex - 1].insert(
-                        (r / 2 - compZoneRowStart) * targetGeometry.cols() + c / 2 - compZoneColStart);
+                    targetSitesPerPPathway[pPathwayIndex - 1].insert(std::tuple(r / 2, c / 2));
                 }
                 auto pathwayIndex = labelledPathway(pathwayRowIndex, pathwayColIndex);
                 if(pathwayIndex != 0)
                 {
-                    pathwaysPerPPathway[pPathwayIndex - 1].insert(pathwayIndex);
+                    pathwaysPerPPathway[pPathwayIndex - 1].insert(pathwayIndex - 1);
                 }
             }
         }
     }
 
-    std::vector<std::set<size_t>> targetSitesPerPathway;
+    std::vector<std::set<std::tuple<size_t,size_t>>> targetSitesPerPathway;
     targetSitesPerPathway.resize(labelCount);
     for(size_t pPathwayIndex = 0; pPathwayIndex < pLabelCount; pPathwayIndex++)
     {
@@ -521,7 +530,7 @@ std::optional<std::tuple<ParallelMove,double>> findDistOneMove(
     Eigen::Ref<Eigen::Array<unsigned int,Eigen::Dynamic,Eigen::Dynamic>> penalizedPathway,
     const py::EigenDRef<const Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &stateArray,
     const py::EigenDRef<const Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &targetGeometry,
-    const std::vector<std::tuple<size_t,size_t>>& possibleMoves, std::set<std::tuple<size_t,size_t>>& unusableAtoms,
+    std::set<std::tuple<size_t,size_t>>& unusableAtoms,
     size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd,
     size_t borderRows, size_t borderCols, std::shared_ptr<spdlog::logger> logger)
 {
@@ -576,7 +585,7 @@ std::optional<std::tuple<ParallelMove,double>> findDistOneMove(
                 {
                     colsToMoveIndexDown[row].set(col, true);
                 }
-                if(col < targetGeometry.rows() - 1 && !stateArray(row + compZoneRowStart, col + 1 + compZoneColStart) && targetGeometry(row, col + 1) && 
+                if(col < targetGeometry.cols() - 1 && !stateArray(row + compZoneRowStart, col + 1 + compZoneColStart) && targetGeometry(row, col + 1) && 
                     penalizedPathway(borderRows + 2 * (row + compZoneRowStart), borderCols + 2 * (col + 1 + compZoneColStart)) <= 
                     (MIN_DIST_FROM_OCC_SITES > COL_SPACING ? 1 : 0))
                 {
@@ -597,7 +606,7 @@ std::optional<std::tuple<ParallelMove,double>> findDistOneMove(
                 {
                     allowedColsToMoveIndexDown[row].set(col, true);
                 }
-                if(col < targetGeometry.rows() - 1 && penalizedPathway(borderRows + 2 * (row + compZoneRowStart), borderCols + 2 * (col + 1 + compZoneColStart)) == 0)
+                if(col < targetGeometry.cols() - 1 && penalizedPathway(borderRows + 2 * (row + compZoneRowStart), borderCols + 2 * (col + 1 + compZoneColStart)) == 0)
                 {
                     allowedColsToMoveIndexUp[row].set(col, true);
                 }
@@ -617,8 +626,6 @@ std::optional<std::tuple<ParallelMove,double>> findDistOneMove(
 
         perRowBitMaskIndexDown.push_back(downBitMask);
         perRowBitMaskIndexUp.push_back(upBitMask);
-
-        //logger->debug("Per row BitMask bits set at {}: {}/{}; {}/{}", row, colsToMoveIndexDown[row].bitsSet(), downBitMask.bitsSet(), colsToMoveIndexUp[row].bitsSet(), upBitMask.bitsSet());
 
         unsigned int sum = colsToMoveIndexDown[row].bitsSet() + colsToMoveIndexUp[row].bitsSet();
         if(sum > 0)
@@ -643,8 +650,6 @@ std::optional<std::tuple<ParallelMove,double>> findDistOneMove(
         perColBitMaskIndexDown.push_back(downBitMask);
         perColBitMaskIndexUp.push_back(upBitMask);
 
-        //logger->debug("Per col BitMask bits set at {}: {}/{}; {}/{}", col, rowsToMoveIndexDown[col].bitsSet(), downBitMask.bitsSet(), rowsToMoveIndexUp[col].bitsSet(), upBitMask.bitsSet());
-
         unsigned int sum = rowsToMoveIndexDown[col].bitsSet() + rowsToMoveIndexUp[col].bitsSet();
         if(sum > 0)
         {
@@ -660,7 +665,7 @@ std::optional<std::tuple<ParallelMove,double>> findDistOneMove(
     std::optional<std::tuple<RowBitMask,RowBitMask,bool,unsigned int>> bestOverlap = std::nullopt;
 
     size_t iter = 0;
-    while(!bestOverlaps.empty() && iter++ < 1000)
+    while(!bestOverlaps.empty() && iter++ < 100)
     {
         auto currentElem = bestOverlaps.back();
         auto [downBitMask,upBitMask,vertical,overlap] = currentElem;
@@ -828,7 +833,7 @@ std::optional<std::tuple<ParallelMove,double>> findDistOneMove(
         move.steps.push_back(std::move(start));
         move.steps.push_back(std::move(end));
 
-        double filledPerCost = 2 * (double)actualOverlap / move.cost();
+        double filledPerCost = (VALUE_FILLED_DESIRED + VALUE_USED_UNDESIRED) * (double)actualOverlap / move.cost();
         logger->debug("Returning distance one move that sorts {}, filledPerCost: {}", actualOverlap, filledPerCost);
         return std::tuple(move, filledPerCost);
     }
@@ -841,11 +846,10 @@ std::optional<std::tuple<ParallelMove,double>> findDistOneMove(
 
 std::optional<std::tuple<ParallelMove,double>> findComplexMove(
     Eigen::Ref<Eigen::Array<unsigned int,Eigen::Dynamic,Eigen::Dynamic>> penalizedPathway, 
-    const Eigen::Ref<const Eigen::Array<unsigned int,Eigen::Dynamic,Eigen::Dynamic>>& labelledPathway,
+    const Eigen::Ref<const Eigen::Array<unsigned int,Eigen::Dynamic,Eigen::Dynamic>>& labelledPathway, unsigned int labelCount,
     const py::EigenDRef<const Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &stateArray,
     const py::EigenDRef<const Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &targetGeometry,
-    std::set<std::tuple<size_t,size_t>>& unusableAtoms, 
-    const std::vector<std::tuple<size_t,size_t>>& possibleMoves, 
+    std::set<std::tuple<size_t,size_t>>& unusableAtoms, std::set<std::tuple<size_t,size_t>>& usableTargetSites,
     size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd,
     size_t borderRows, size_t borderCols, double bestIntPerCost, std::shared_ptr<spdlog::logger> logger)
 {
@@ -854,25 +858,106 @@ std::optional<std::tuple<ParallelMove,double>> findComplexMove(
     std::optional<std::vector<std::tuple<bool,size_t,int>>> bestMovePath = std::nullopt;
 
     std::vector<std::vector<std::set<std::tuple<size_t,size_t>>>> movableRowsPerTargetColPerSourceCol;
-    for(size_t col = 0; col < (size_t)targetGeometry.cols(); col++)
+    for(size_t col = 0; col < (size_t)stateArray.cols(); col++)
     {
         std::vector<std::set<std::tuple<size_t,size_t>>> movableRowsPerTargetCol;
-        for(size_t tCol = 0; tCol < (size_t)targetGeometry.cols(); tCol++)
+        for(size_t tCol = 0; tCol < (size_t)stateArray.cols(); tCol++)
         {
             movableRowsPerTargetCol.push_back(std::set<std::tuple<size_t,size_t>>());
         }
         movableRowsPerTargetColPerSourceCol.push_back(std::move(movableRowsPerTargetCol));
     }
 
-    for(const auto& [pMStart, pMEnd] : possibleMoves)
+    auto targetSitesNeighboringPathways = findTargetSitesPerPathway(penalizedPathway,
+            labelledPathway, usableTargetSites, borderRows, borderCols, labelCount, 
+            compZoneRowStart, compZoneRowEnd, compZoneColStart, compZoneColEnd,
+            stateArray, targetGeometry, logger);
+
+    std::vector<std::tuple<size_t,size_t,size_t,size_t>> possibleMoves;
+
+    auto occMask = generateMask(MIN_DIST_FROM_OCC_SITES, 0.5);
+    Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic> localAccessibility(occMask.rows() + 2, occMask.cols() + 2);
+
+    for(size_t r = 0; r < (size_t)stateArray.rows(); r++)
     {
-        movableRowsPerTargetColPerSourceCol[pMStart % targetGeometry.cols()][pMEnd % targetGeometry.cols()].insert(
-            std::tuple(pMStart / targetGeometry.cols() + compZoneRowStart, pMEnd / targetGeometry.cols() + compZoneRowStart));
+        Eigen::Index pathwayRowIndex = 2 * r + borderRows;
+        for(size_t c = 0; c < (size_t)stateArray.cols(); c++)
+        {
+            if(stateArray(r, c) && !unusableAtoms.contains(std::tuple(r, c)) && 
+                (r < compZoneRowStart || r >= compZoneRowEnd || c < compZoneColStart || c >= compZoneColEnd || 
+                !targetGeometry(r - compZoneRowStart, c - compZoneColStart)))
+            {
+                Eigen::Index pathwayColIndex = 2 * c + borderCols;
+                std::set<std::tuple<size_t,size_t>> accessibleTargetSites;
+                bool changesWereMade = true;
+                localAccessibility.fill(false);
+                localAccessibility(localAccessibility.rows() / 2, localAccessibility.cols() / 2) = true;
+                while(changesWereMade)
+                {
+                    changesWereMade = false;
+                    for(Eigen::Index lRow = 0; lRow < localAccessibility.rows(); lRow++)
+                    {
+                        for(Eigen::Index lCol = 0; lCol < localAccessibility.cols(); lCol++)
+                        {
+                            if(localAccessibility(lRow, lCol))
+                            {
+                                if((localAccessibility.rows() / 2 - lRow) % 2 == 0 && (localAccessibility.cols() / 2 - lCol) % 2 == 0 && 
+                                    usableTargetSites.contains(std::tuple(r - (localAccessibility.rows() / 2 - lRow) / 2,
+                                        c - (localAccessibility.cols() / 2 - lCol) / 2)))
+                                {
+                                    accessibleTargetSites.insert(std::tuple(r - (localAccessibility.rows() / 2 - lRow) / 2,
+                                        c - (localAccessibility.cols() / 2 - lCol) / 2));
+                                }
+                                if(labelledPathway(pathwayRowIndex - localAccessibility.rows() / 2 + lRow,
+                                    pathwayColIndex - localAccessibility.cols() / 2 + lCol) != 0)
+                                {
+                                    for(const auto& targetSite : targetSitesNeighboringPathways[
+                                        labelledPathway(pathwayRowIndex - localAccessibility.rows() / 2 + lRow,
+                                            pathwayColIndex - localAccessibility.cols() / 2 + lCol) - 1])
+                                    {
+                                        accessibleTargetSites.insert(targetSite);
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                bool withinOwnAtomsProhibitedArea = lRow > 0 && lRow < localAccessibility.rows() - 1 && 
+                                    lCol > 0 && lCol < localAccessibility.cols() - 1 && occMask(lRow - 1, lCol - 1);
+                                bool notInOtherPathway = penalizedPathway(pathwayRowIndex - localAccessibility.rows() / 2 + lRow,
+                                    pathwayColIndex - localAccessibility.cols() / 2 + lCol) <= (withinOwnAtomsProhibitedArea ? 1 : 0);
+                                bool adjacentToAccessibleLoc = 
+                                    (lRow > 0 && localAccessibility(lRow - 1, lCol)) || 
+                                    (lRow < localAccessibility.rows() - 1 && localAccessibility(lRow + 1, lCol)) || 
+                                    (lCol > 0 && localAccessibility(lRow, lCol - 1)) || 
+                                    (lCol < localAccessibility.cols() - 1 && localAccessibility(lRow, lCol + 1));
+                                if(notInOtherPathway && adjacentToAccessibleLoc)
+                                {
+                                    localAccessibility(lRow, lCol) = true;
+                                    changesWereMade = true;
+                                }
+                            }
+                        }
+                    }
+                }
+                for(const auto& [targetRow, targetCol] : accessibleTargetSites)
+                {
+                    possibleMoves.push_back(std::tuple(r, c, targetRow, targetCol));
+                }
+            }
+        }
     }
 
-    for(size_t col = 0; col < (size_t)targetGeometry.cols(); col++)
+    logger->debug("{} possible single moves found", possibleMoves.size());
+
+    for(const auto& [pMStartRow, pMStartCol, pMEndRow, pMEndCol] : possibleMoves)
     {
-        for(size_t tCol = 0; tCol < (size_t)targetGeometry.cols(); tCol++)
+        movableRowsPerTargetColPerSourceCol[pMStartCol][pMEndCol].insert(
+            std::tuple(pMStartRow, pMEndRow));
+    }
+
+    for(size_t col = 0; col < (size_t)stateArray.cols(); col++)
+    {
+        for(size_t tCol = 0; tCol < (size_t)stateArray.cols(); tCol++)
         {
             double minCost = MOVE_COST_OFFSET + costPerSubMove(abs((int)tCol - (int)col) * COL_SPACING);
             if(movableRowsPerTargetColPerSourceCol[col][tCol].size() > 0 && (movableRowsPerTargetColPerSourceCol[col][tCol].size() / minCost) > bestIntPerCost)
@@ -919,7 +1004,7 @@ std::optional<std::tuple<ParallelMove,double>> findComplexMove(
                     checkingMoveStream << ")";
                     logger->debug(checkingMoveStream.str());
                     std::set<std::tuple<size_t,size_t>> cols;
-                    cols.insert(std::tuple(col + compZoneColStart, tCol + compZoneColStart));
+                    cols.insert(std::tuple(col, tCol));
                     auto move = checkMoveValidity(stateArray, labelledPathway, penalizedPathway, unusableAtoms, compZoneRowStart, compZoneColStart, 
                         borderRows, borderCols, cols, bestSubset.value(), bestIntPerCost, logger);
                     if(move.has_value())
@@ -980,7 +1065,7 @@ std::optional<std::tuple<ParallelMove,double>> findComplexMove(
 
         logger->info("Returning complex move sorts {} rows and {} cols within computational zone, filledPerCost: {}", 
             move.steps[0].rowSelection.size(), move.steps[0].colSelection.size(), 2 * bestIntPerCost);
-        return std::tuple(move, 2 * bestIntPerCost);
+        return std::tuple(move, (VALUE_FILLED_DESIRED + VALUE_USED_UNDESIRED) * bestIntPerCost);
     }
     else
     {
@@ -989,30 +1074,192 @@ std::optional<std::tuple<ParallelMove,double>> findComplexMove(
     }
 }
 
-std::optional<std::tuple<ParallelMove,double>> findPathwayMove(
+std::optional<ParallelMove> checkIntersectingPathwayMove(
+    const std::vector<std::set<unsigned int>>& intersectingPathways,
+    const std::map<unsigned int, std::tuple<std::tuple<size_t, std::vector<size_t>>, size_t>>& bestStartIPerPathway, 
+    const std::map<unsigned int, std::tuple<std::tuple<size_t, std::vector<size_t>>, size_t>>& bestEndIPerPathway, 
+    bool vertical, std::shared_ptr<spdlog::logger> logger)
+{
+    unsigned int bestMovableAtoms = 0;
+    std::optional<std::tuple<unsigned int, unsigned int>> bestPathways = std::nullopt;
+    std::set<unsigned int> bestIntersection;
+
+    for(const auto& [pathway, startIAndJsAndOwnI] : bestStartIPerPathway)
+    {
+        const auto& [startIAndJs, ownI] = startIAndJsAndOwnI;
+        const auto& [startI, startJs] = startIAndJs;
+        if(startJs.size() > bestMovableAtoms)
+        {
+            for(const auto& [otherPathway, endIAndJsAndOwnI] : bestEndIPerPathway)
+            {
+                if(pathway != otherPathway)
+                {
+                    const auto& [otherEndIAndJs, otherOwnI] = endIAndJsAndOwnI;
+                    const auto& [endI, endJs] = otherEndIAndJs;
+                    if(endJs.size() > bestMovableAtoms)
+                    {
+                        std::set<unsigned int> intersection;
+                        std::set_intersection(intersectingPathways[pathway].begin(), intersectingPathways[pathway].end(),
+                            intersectingPathways[otherPathway].begin(), intersectingPathways[otherPathway].end(),
+                            std::inserter(intersection, intersection.begin()));
+                        if(intersection.size() > bestMovableAtoms)
+                        {
+                            unsigned int movableAtoms = startJs.size();
+                            if(endJs.size() < movableAtoms)
+                            {
+                                movableAtoms = endJs.size();
+                            }
+                            if(intersection.size() < movableAtoms)
+                            {
+                                movableAtoms = intersection.size();
+                            }
+                            #pragma omp critical
+                            {
+                            if(!bestPathways.has_value() || movableAtoms > bestMovableAtoms)
+                            {
+                                bestMovableAtoms = movableAtoms;
+                                bestPathways = std::tuple(pathway, otherPathway);
+                                bestIntersection = intersection;
+                            }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if(bestPathways.has_value())
+    {
+        if(vertical)
+        {
+            if(bestMovableAtoms > AOD_ROW_LIMIT)
+            {
+                bestMovableAtoms = AOD_ROW_LIMIT;
+            }
+        }
+        else
+        {
+            if(bestMovableAtoms > AOD_COL_LIMIT)
+            {
+                bestMovableAtoms = AOD_COL_LIMIT;
+            }
+        }
+        if(bestMovableAtoms > AOD_TOTAL_LIMIT)
+        {
+            bestMovableAtoms = AOD_TOTAL_LIMIT;
+        }
+        const auto& [pathway, otherPathway] = bestPathways.value();
+        ParallelMove move;
+        ParallelMove::Step start, ontoFirstPathway, fromFirstPathway, ontoSecondPathway, fromSecondPathway, end;
+        const auto& [startI, startJs] = std::get<0>(bestStartIPerPathway.at(pathway));
+        auto firstPathwayI = std::get<1>(bestStartIPerPathway.at(pathway));
+        const auto& [endI, endJs] = std::get<0>(bestEndIPerPathway.at(otherPathway));
+        auto secondPathwayI = std::get<1>(bestEndIPerPathway.at(otherPathway));
+        if(vertical)
+        {
+            start.colSelection.push_back(startI);
+            for(size_t i = 0; i < bestMovableAtoms; i++)
+            {
+                start.rowSelection.insert(std::upper_bound(start.rowSelection.begin(), 
+                    start.rowSelection.end(), startJs[i]), startJs[i]);
+            }
+            ontoFirstPathway.colSelection.push_back((double)firstPathwayI / 2.);
+            ontoFirstPathway.rowSelection = start.rowSelection;
+            fromFirstPathway.colSelection.push_back((double)firstPathwayI / 2.);
+            for(const auto& intersectionIndex : bestIntersection)
+            {
+                fromFirstPathway.rowSelection.push_back((double)intersectionIndex / 2.);
+                if(fromFirstPathway.rowSelection.size() == bestMovableAtoms)
+                {
+                    break;
+                }
+            }
+            ontoSecondPathway.colSelection.push_back((double)secondPathwayI / 2.);
+            ontoSecondPathway.rowSelection = fromFirstPathway.rowSelection;
+            fromSecondPathway.colSelection.push_back((double)secondPathwayI / 2.);
+            for(size_t i = 0; i < bestMovableAtoms; i++)
+            {
+                fromSecondPathway.rowSelection.insert(std::upper_bound(fromSecondPathway.rowSelection.begin(), 
+                    fromSecondPathway.rowSelection.end(), endJs[i]), endJs[i]);
+            }
+            end.colSelection.push_back(endI);
+            end.rowSelection = fromSecondPathway.rowSelection;
+        }
+        else
+        {
+            start.rowSelection.push_back(startI);
+            for(size_t i = 0; i < bestMovableAtoms; i++)
+            {
+                start.colSelection.insert(std::upper_bound(start.colSelection.begin(), 
+                    start.colSelection.end(), startJs[i]), startJs[i]);
+            }
+            ontoFirstPathway.rowSelection.push_back((double)firstPathwayI / 2.);
+            ontoFirstPathway.colSelection = start.colSelection;
+            fromFirstPathway.rowSelection.push_back((double)firstPathwayI / 2.);
+            for(const auto& intersectionIndex : bestIntersection)
+            {
+                fromFirstPathway.colSelection.push_back((double)intersectionIndex / 2.);
+                if(fromFirstPathway.colSelection.size() == bestMovableAtoms)
+                {
+                    break;
+                }
+            }
+            ontoSecondPathway.rowSelection.push_back((double)secondPathwayI / 2.);
+            ontoSecondPathway.colSelection = fromFirstPathway.colSelection;
+            fromSecondPathway.rowSelection.push_back((double)secondPathwayI / 2.);
+            for(size_t i = 0; i < bestMovableAtoms; i++)
+            {
+                fromSecondPathway.colSelection.insert(std::upper_bound(fromSecondPathway.colSelection.begin(), 
+                    fromSecondPathway.colSelection.end(), endJs[i]), endJs[i]);
+            }
+            end.rowSelection.push_back(endI);
+            end.colSelection = fromSecondPathway.colSelection;
+        }
+
+        move.steps.push_back(std::move(start));
+        move.steps.push_back(std::move(ontoFirstPathway));
+        move.steps.push_back(std::move(fromFirstPathway));
+        move.steps.push_back(std::move(ontoSecondPathway));
+        move.steps.push_back(std::move(fromSecondPathway));
+        move.steps.push_back(std::move(end));
+        logger->debug("Best intersecting pathway movable atom count: {}", bestMovableAtoms);
+        return move;
+    }
+    logger->debug("No intersecting pathway move found");
+    return std::nullopt;
+}
+
+std::optional<std::tuple<ParallelMove, double>> findPathwayMove(
     Eigen::Ref<Eigen::Array<unsigned int,Eigen::Dynamic,Eigen::Dynamic>> penalizedPathway, 
     const Eigen::Ref<const Eigen::Array<unsigned int,Eigen::Dynamic,Eigen::Dynamic>>& pathway,
     const Eigen::Ref<const Eigen::Array<unsigned int,Eigen::Dynamic,Eigen::Dynamic>>& labelledPathway,
     const py::EigenDRef<const Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &stateArray,
     const py::EigenDRef<const Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &targetGeometry,
-    std::set<std::tuple<size_t,size_t>>& unusableAtoms, std::set<std::tuple<size_t,size_t>>& usableTargetSites,
-    const std::vector<std::tuple<size_t,size_t>>& possibleMoves, 
+    std::set<std::tuple<size_t,size_t>>& unusableAtoms, std::set<std::tuple<size_t,size_t>>& usableAtoms, 
+    std::set<std::tuple<size_t,size_t>>& usableTargetSites,
     size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd,
     size_t borderRows, size_t borderCols, double bestIntPerCost, std::shared_ptr<spdlog::logger> logger)
 {
-    double bestLocalIntPerCost = 0;
+    double bestLocalBenefitPerCost = 0;
     std::optional<ParallelMove> bestMove = std::nullopt;
+    unsigned int bestToneCount = 0;
+
+    Eigen::Array<unsigned int,Eigen::Dynamic,Eigen::Dynamic> byIPathways[2] = {
+        Eigen::Array<unsigned int,Eigen::Dynamic,Eigen::Dynamic>::Zero(pathway.rows(), pathway.cols()),
+        Eigen::Array<unsigned int,Eigen::Dynamic,Eigen::Dynamic>::Zero(pathway.rows(), pathway.cols())
+    };
+    unsigned int pathwayCounts[2] = {0, 0};
+    std::vector<std::vector<unsigned int>> pathwaysPerIndex[2];
+
+    auto startTime = std::chrono::steady_clock::now();
 
     for(bool vertical : {true,false})
     {
-        Eigen::Array<unsigned int,Eigen::Dynamic,Eigen::Dynamic> byIPathways = 
-            Eigen::Array<unsigned int,Eigen::Dynamic,Eigen::Dynamic>::Zero(pathway.rows(), pathway.cols());
-        unsigned int pathwayCount = 0;
         Eigen::Index outerDimSize = vertical ? stateArray.cols() : stateArray.rows();
         size_t outerMaxIndex = 2 * outerDimSize - 1;
         size_t innerMaxIndex = vertical ? (2 * stateArray.rows() - 1) : (2 * stateArray.cols() - 1);
-        std::vector<std::vector<unsigned int>> pathwaysPerIndex;
-        pathwaysPerIndex.resize(outerMaxIndex);
+        pathwaysPerIndex[vertical].resize(outerMaxIndex);
+
         for(size_t i = 0; i < outerMaxIndex; i++)
         {
             std::vector<std::tuple<size_t,size_t>> startsAndEnds;
@@ -1040,286 +1287,320 @@ std::optional<std::tuple<ParallelMove,double>> findPathwayMove(
                     {
                         if(pathwayLength > 1)
                         {
-                            pathwayCount++;
+                            pathwayCounts[vertical]++;
                             for(size_t jBackwards = 1; jBackwards <= pathwayLength; jBackwards++)
                             {
                                 Eigen::Index pathwayRowBackwards = borderRows + (vertical ? j - jBackwards : i);
                                 Eigen::Index pathwayColBackwards = borderCols + (vertical ? i : j - jBackwards);
-                                byIPathways(pathwayRowBackwards, pathwayColBackwards) = pathwayCount;
+                                byIPathways[vertical](pathwayRowBackwards, pathwayColBackwards) = pathwayCounts[vertical];
                             }
-                            pathwaysPerIndex[i].push_back(pathwayCount);
+                            pathwaysPerIndex[vertical][i].push_back(pathwayCounts[vertical]);
                         }
                         inPathway = false;
                     }
                 }
             }
-        }
-
-        std::vector<std::vector<std::tuple<size_t,size_t>>> reachableTargetSitesPerPathway;
-        reachableTargetSitesPerPathway.resize(pathwayCount);
-
-        for(size_t row = 0; (int)row < 2 * stateArray.rows() - 1; row++)
-        {
-            if(!vertical || (row >= 2 * compZoneRowStart && row <= 2 * (compZoneRowEnd - 1)))
+            if(inPathway)
             {
-                for(size_t col = 0; (int)col < 2 * stateArray.cols() - 1; col++)
+                if(pathwayLength > 1)
                 {
-                    if(vertical || (col >= 2 * compZoneColStart && col <= 2 * (compZoneColEnd - 1)))
+                    pathwayCounts[vertical]++;
+                    for(size_t jBackwards = 1; jBackwards <= pathwayLength; jBackwards++)
                     {
-                        unsigned int iPathway = byIPathways(borderRows + row, borderCols + col);
-                        if(iPathway != 0)
+                        Eigen::Index pathwayRowBackwards = borderRows + (vertical ? innerMaxIndex - jBackwards : i);
+                        Eigen::Index pathwayColBackwards = borderCols + (vertical ? i : innerMaxIndex - jBackwards);
+                        byIPathways[vertical](pathwayRowBackwards, pathwayColBackwards) = pathwayCounts[vertical];
+                    }
+                    pathwaysPerIndex[vertical][i].push_back(pathwayCounts[vertical]);
+                }
+            }
+        }
+    }
+    logger->debug("Time for constructing pathways: {}us", (double)((std::chrono::steady_clock::now() - startTime).count()) / 1000.);
+    startTime = std::chrono::steady_clock::now();
+
+
+    std::vector<std::set<unsigned int>> intersectingPathways[2];
+    intersectingPathways[true].resize(pathwayCounts[true] + 1);
+    intersectingPathways[false].resize(pathwayCounts[false] + 1);
+    for(Eigen::Index row = 0; row < 2 * stateArray.rows() - 1; row++)
+    {
+        for(Eigen::Index col = 0; col < 2 * stateArray.cols() - 1; col++)
+        {
+            const auto& pathwayIndex = byIPathways[true](borderRows + row, borderCols + col);
+            if(pathwayIndex > 0)
+            {
+                const auto& intersectingPathwayIndex = byIPathways[false](borderRows + row, borderCols + col);
+                if(intersectingPathwayIndex > 0)
+                {
+                    intersectingPathways[true][pathwayIndex].insert(intersectingPathwayIndex);
+                    intersectingPathways[false][intersectingPathwayIndex].insert(pathwayIndex);
+                }
+            }
+        }
+    }
+    logger->debug("Time for finding intersecting pathways: {}us", (double)((std::chrono::steady_clock::now() - startTime).count()) / 1000.);
+
+    for(bool vertical : {true,false})
+    {
+        startTime = std::chrono::steady_clock::now();
+        Eigen::Index outerDimSize = vertical ? stateArray.cols() : stateArray.rows();
+        size_t outerMaxIndex = 2 * outerDimSize - 1;
+
+        std::map<unsigned int, std::tuple<std::vector<std::tuple<size_t,size_t>>,std::vector<std::tuple<size_t,size_t>>>> 
+            reachableTargetSitesAndValidSourceSitesPerPathway;
+
+        for(const auto& [row, col] : usableTargetSites)
+        {
+            for(int dir : {-1, 1})
+            {
+                for(int dist = 1;; dist++)
+                {
+                    int newRow = 2 * row;
+                    int newCol = 2 * col;
+                    if(vertical)
+                    {
+                        newCol += dir * dist;
+                        if(newCol < 0 || newCol >= 2 * stateArray.cols() - 1)
                         {
-                            for(bool positive : {true, false})
-                            {
-                                for(unsigned int dist = (positive ? 0 : 1);; dist++)
-                                {
-                                    size_t newRow = row;
-                                    size_t newCol = col;
-                                    if(vertical)
-                                    { 
-                                        if(positive)
-                                        {
-                                            if((int)(col + dist) >= 2 * stateArray.cols() - 1)
-                                            {
-                                                break;
-                                            }
-                                            else
-                                            {
-                                                newCol += dist;
-                                            }
-                                        }
-                                        else
-                                        {
-                                            if(dist > col)
-                                            {
-                                                break;
-                                            }
-                                            else
-                                            {
-                                                newCol -= dist;
-                                            }
-                                        }
-                                    }
-                                    else
-                                    {
-                                        if(positive)
-                                        {
-                                            if((int)(row + dist) >= 2 * stateArray.rows() - 1)
-                                            {
-                                                break;
-                                            }
-                                            else
-                                            {
-                                                newRow += dist;
-                                            }
-                                        }
-                                        else
-                                        {
-                                            if(dist > row)
-                                            {
-                                                break;
-                                            }
-                                            else
-                                            {
-                                                newRow -= dist;
-                                            }
-                                        }
-                                    }
-                                    size_t pathwayRow = borderRows + newRow;
-                                    size_t pathwayCol = borderCols + newCol;
-                                    if(penalizedPathway(pathwayRow, pathwayCol) > 0)
-                                    {
-                                        break;
-                                    }
-                                    else if(newRow % 2 == 0 && newCol % 2 == 0 && 
-                                        newRow / 2 >= compZoneRowStart && newRow / 2 < compZoneRowEnd && 
-                                        newCol / 2 >= compZoneColStart && newCol / 2 < compZoneColEnd && 
-                                        usableTargetSites.contains(std::tuple(newRow / 2, newCol / 2)))
-                                    {
-                                        reachableTargetSitesPerPathway[iPathway - 1].push_back(std::tuple(newRow / 2, newCol / 2));
-                                    }
-                                }
-                            }
+                            break;
                         }
+                    }
+                    else
+                    {
+                        newRow += dir * dist;
+                        if(newRow < 0 || newRow >= 2 * stateArray.rows() - 1)
+                        {
+                            break;
+                        }
+                    }
+
+                    unsigned int iPathway = byIPathways[vertical](borderRows + newRow, borderCols + newCol);
+                    if(iPathway != 0)
+                    {
+                        std::get<0>(reachableTargetSitesAndValidSourceSitesPerPathway[iPathway]).push_back(std::tuple(row, col));
+                    }
+                    else if(penalizedPathway(borderRows + newRow, borderCols + newCol) > 0)
+                    {
+                        break;
                     }
                 }
             }
         }
+        logger->debug("Time for finding target sites: {}us", (double)((std::chrono::steady_clock::now() - startTime).count()) / 1000.);
+        startTime = std::chrono::steady_clock::now();
 
-        std::vector<std::vector<std::tuple<size_t,size_t>>> validSourceSitesPerPathway;
-        validSourceSitesPerPathway.resize(pathwayCount);
         std::vector<std::vector<std::tuple<size_t,size_t,unsigned int,unsigned int>>> 
             validSourceSitesThatCanServeTwoPathwayPerI;
         validSourceSitesThatCanServeTwoPathwayPerI.resize(outerMaxIndex);
 
-        for(int row = 0; row < stateArray.rows(); row++)
+        for(const auto& [row, col] : usableAtoms)
         {
-            for(int col = 0; col < stateArray.cols(); col++)
+            for(int perpendicularDir : {-1, 1})
             {
-                if(stateArray(row, col) && (row < (int)compZoneRowStart || row >= (int)compZoneRowEnd || 
-                    col < (int)compZoneColStart || col >= (int)compZoneColEnd || 
-                    !targetGeometry(row - compZoneRowStart, col - compZoneColStart)))
+                for(int pDist = (perpendicularDir + 1) / 2;; pDist++)
                 {
-                    for(bool perpendicularPositive : {true,false})
+                    int shiftedRow = 2 * row;
+                    int shiftedCol = 2 * col;
+                    if(vertical)
                     {
-                        for(int pDist = (perpendicularPositive ? 0 : 1);; pDist++)
+                        shiftedCol += perpendicularDir * pDist;
+                        if(shiftedCol < 0 || shiftedCol >= 2 * stateArray.cols() - 1)
                         {
-                            int shiftedRow = 2 * row;
-                            int shiftedCol = 2 * col;
-                            if(vertical)
+                            break;
+                        }
+                    }
+                    else
+                    {
+                        shiftedRow += perpendicularDir * pDist;
+                        if(shiftedRow < 0 || shiftedRow >= 2 * stateArray.rows() - 1)
+                        {
+                            break;
+                        }
+                    }
+                    if((vertical ? HALF_COL_SPACING : HALF_ROW_SPACING) * pDist < MIN_DIST_FROM_OCC_SITES)
+                    {
+                        if(penalizedPathway(borderRows + shiftedRow, borderCols + shiftedCol) > 1)
+                        {
+                            break;
+                        }
+                        else
+                        {
+                            unsigned int pathwayNegative = 0;
+                            unsigned int pathwayPositive = 0;
+                            for(bool alongPathwayDirPositive : {true,false})
                             {
-                                shiftedCol += pDist * (perpendicularPositive ? 1 : -1);
-                                if(shiftedCol < 0 || shiftedCol >= 2 * stateArray.cols() - 1)
+                                for(int alongPDirDist = 1;; alongPDirDist++)
                                 {
-                                    break;
-                                }
-                            }
-                            else
-                            {
-                                shiftedRow += pDist * (perpendicularPositive ? 1 : -1);
-                                if(shiftedRow < 0 || shiftedRow >= 2 * stateArray.rows() - 1)
-                                {
-                                    break;
-                                }
-                            }
-                            if((vertical ? HALF_COL_SPACING : HALF_ROW_SPACING) * pDist < MIN_DIST_FROM_OCC_SITES)
-                            {
-                                if(penalizedPathway(borderRows + shiftedRow, borderCols + shiftedCol) > 1)
-                                {
-                                    break;
-                                }
-                                else
-                                {
-                                    unsigned int pathwayNegative = 0;
-                                    unsigned int pathwayPositive = 0;
-                                    for(bool alongPathwayDirPositive : {true,false})
+                                    int twiceShiftedRow = shiftedRow;
+                                    int twiceShiftedCol = shiftedCol;
+                                    if(vertical)
                                     {
-                                        for(int alongPDirDist = 1;; alongPDirDist++)
+                                        twiceShiftedRow += alongPDirDist * (alongPathwayDirPositive ? 1 : -1);
+                                        if(twiceShiftedRow < 0 || twiceShiftedRow >= 2 * stateArray.rows() - 1)
                                         {
-                                            int twiceShiftedRow = shiftedRow;
-                                            int twiceShiftedCol = shiftedCol;
-                                            if(vertical)
-                                            {
-                                                twiceShiftedRow += alongPDirDist * (alongPathwayDirPositive ? 1 : -1);
-                                                if(twiceShiftedRow < 0 || twiceShiftedRow >= 2 * stateArray.rows() - 1)
-                                                {
-                                                    break;
-                                                }
-                                            }
-                                            else
-                                            {
-                                                twiceShiftedCol += alongPDirDist * (alongPathwayDirPositive ? 1 : -1);
-                                                if(twiceShiftedCol < 0 || twiceShiftedCol >= 2 * stateArray.cols() - 1)
-                                                {
-                                                    break;
-                                                }
-                                            }
-                                            if(pythagorasDist((double)(twiceShiftedRow - 2 * row) * HALF_ROW_SPACING, 
-                                                (double)(twiceShiftedCol - 2 * col) * HALF_COL_SPACING) < MIN_DIST_FROM_OCC_SITES)
-                                            {
-                                                if(penalizedPathway(borderRows + twiceShiftedRow, borderCols + twiceShiftedCol) > 1)
-                                                {
-                                                    break;
-                                                }
-                                            }
-                                            else
-                                            {
-                                                if(alongPathwayDirPositive)
-                                                {
-                                                    pathwayPositive = byIPathways(borderRows + twiceShiftedRow, borderCols + twiceShiftedCol);
-                                                }
-                                                else
-                                                {
-                                                    pathwayNegative = byIPathways(borderRows + twiceShiftedRow, borderCols + twiceShiftedCol);
-                                                }
-                                                break;
-                                            }
+                                            break;
                                         }
-                                    }
-                                    if(pathwayNegative == 0 || pathwayPositive == 0)
-                                    {
-                                        if(pathwayNegative != 0)
-                                        {
-                                            validSourceSitesPerPathway[pathwayNegative - 1].push_back(std::tuple(row, col));
-                                        }
-                                        if(pathwayPositive != 0)
-                                        {
-                                            validSourceSitesPerPathway[pathwayPositive - 1].push_back(std::tuple(row, col));
-                                        }
-                                    }
-                                    else if(vertical)
-                                    {
-                                        validSourceSitesThatCanServeTwoPathwayPerI[shiftedCol].push_back(
-                                            std::tuple(row, col, pathwayNegative, pathwayPositive));
                                     }
                                     else
                                     {
-                                        validSourceSitesThatCanServeTwoPathwayPerI[shiftedRow].push_back(
-                                            std::tuple(row, col, pathwayNegative, pathwayPositive));
+                                        twiceShiftedCol += alongPDirDist * (alongPathwayDirPositive ? 1 : -1);
+                                        if(twiceShiftedCol < 0 || twiceShiftedCol >= 2 * stateArray.cols() - 1)
+                                        {
+                                            break;
+                                        }
+                                    }
+                                    if(pythagorasDist((double)(twiceShiftedRow - 2 * row) * HALF_ROW_SPACING, 
+                                        (double)(twiceShiftedCol - 2 * col) * HALF_COL_SPACING) < MIN_DIST_FROM_OCC_SITES)
+                                    {
+                                        if(penalizedPathway(borderRows + twiceShiftedRow, borderCols + twiceShiftedCol) > 1)
+                                        {
+                                            break;
+                                        }
+                                    }
+                                    else
+                                    {
+                                        if(alongPathwayDirPositive)
+                                        {
+                                            pathwayPositive = byIPathways[vertical](borderRows + twiceShiftedRow, borderCols + twiceShiftedCol);
+                                        }
+                                        else
+                                        {
+                                            pathwayNegative = byIPathways[vertical](borderRows + twiceShiftedRow, borderCols + twiceShiftedCol);
+                                        }
+                                        break;
                                     }
                                 }
                             }
-                            else
+
+                            if(pathwayNegative == 0 || pathwayPositive == 0)
                             {
-                                unsigned int iPathwayLabel = byIPathways(borderRows + shiftedRow, borderCols + shiftedCol);
-                                if(iPathwayLabel > 0)
+                                if(pathwayNegative != 0)
                                 {
-                                    validSourceSitesPerPathway[iPathwayLabel - 1].push_back(std::tuple(row, col));
+                                    std::get<1>(reachableTargetSitesAndValidSourceSitesPerPathway[pathwayNegative]).push_back(std::tuple(row, col));
                                 }
-                                else if(penalizedPathway(borderRows + shiftedRow, borderCols + shiftedCol) > 0)
+                                if(pathwayPositive != 0)
                                 {
-                                    break;
+                                    std::get<1>(reachableTargetSitesAndValidSourceSitesPerPathway[pathwayPositive]).push_back(std::tuple(row, col));
                                 }
                             }
+                            else if(vertical)
+                            {
+                                validSourceSitesThatCanServeTwoPathwayPerI[shiftedCol].push_back(
+                                    std::tuple(row, col, pathwayNegative, pathwayPositive));
+                            }
+                            else
+                            {
+                                validSourceSitesThatCanServeTwoPathwayPerI[shiftedRow].push_back(
+                                    std::tuple(row, col, pathwayNegative, pathwayPositive));
+                            }
+                        }
+                    }
+                    else
+                    {
+                        unsigned int iPathwayLabel = byIPathways[vertical](borderRows + shiftedRow, borderCols + shiftedCol);
+
+                        if(iPathwayLabel > 0)
+                        {
+                            std::get<1>(reachableTargetSitesAndValidSourceSitesPerPathway[iPathwayLabel]).push_back(std::tuple(row, col));
+                        }
+                        else if(penalizedPathway(borderRows + shiftedRow, borderCols + shiftedCol) > 0)
+                        {
+                            break;
                         }
                     }
                 }
             }
         }
 
-        Eigen::Array<unsigned int,Eigen::Dynamic,Eigen::Dynamic> movablePerStartAndEndI = 
-            Eigen::Array<unsigned int,Eigen::Dynamic,Eigen::Dynamic>::Zero(outerDimSize, outerDimSize);
+        logger->debug("Time for finding source sites: {}us", (double)((std::chrono::steady_clock::now() - startTime).count()) / 1000.);
+        startTime = std::chrono::steady_clock::now();
+
+        std::map<unsigned int, std::tuple<std::tuple<size_t, std::vector<size_t>>, size_t>> bestStartIAndOwnIPerPathway;
+        std::map<unsigned int, std::tuple<std::tuple<size_t, std::vector<size_t>>, size_t>> bestEndIAndOwnIPerPathway;
+
         for(size_t i = 0; i < outerMaxIndex; i++)
         {
-            movablePerStartAndEndI.fill(0);
-            std::map<unsigned int,std::tuple<std::vector<std::vector<size_t>>,std::vector<std::vector<size_t>>>> 
-                startAndEndIndicesPerPathwayPerI;
-            for(unsigned int pathway : pathwaysPerIndex[i])
+            std::map<unsigned int,std::tuple<std::map<size_t,std::vector<size_t>>,std::map<size_t,std::vector<size_t>>>> 
+                startAndEndIndicesPerPathway;
+            for(const auto& pathway : pathwaysPerIndex[vertical][i])
             {
-                std::vector<std::vector<size_t>> startJsPerI;
-                startJsPerI.resize(outerDimSize);
-                std::vector<std::vector<size_t>> endJsPerI;
-                endJsPerI.resize(outerDimSize);
-                logger->debug("Pathway {} can reach {} target sites from {} source sites", pathway,
-                    reachableTargetSitesPerPathway[pathway - 1].size(), validSourceSitesPerPathway[pathway - 1].size());
-                for(const auto& [row,col] : validSourceSitesPerPathway[pathway - 1])
+                if(reachableTargetSitesAndValidSourceSitesPerPathway.contains(pathway))
                 {
-                    if(vertical)
+                    const auto& [reachableTargetSites, validSourceSites] = reachableTargetSitesAndValidSourceSitesPerPathway[pathway];
+                    std::map<size_t,std::vector<size_t>> startJsPerI;
+                    if(validSourceSites.size() > 0)
                     {
-                        startJsPerI[col].push_back(row);
+                        for(const auto& [row,col] : validSourceSites)
+                        {
+                            if(vertical)
+                            {
+                                startJsPerI[col].push_back(row);
+                            }
+                            else
+                            {
+                                startJsPerI[row].push_back(col);
+                            }
+                        }
+                        const auto& maxStartIAndJs = std::max_element(startJsPerI.begin(),
+                            startJsPerI.end(), [](const auto& lhs, const auto& rhs) {
+                                return std::get<1>(lhs).size() < std::get<1>(rhs).size();});
+                        if(maxStartIAndJs != startJsPerI.end())
+                        {
+                            bestStartIAndOwnIPerPathway[pathway] = std::tuple(*maxStartIAndJs, i);
+                        }
                     }
-                    else
+                    if(reachableTargetSites.size() > 0)
                     {
-                        startJsPerI[row].push_back(col);
+                        std::map<size_t,std::vector<size_t>> endJsPerI;
+                        for(const auto& [row,col] : reachableTargetSites)
+                        {
+                            if(vertical)
+                            {
+                                endJsPerI[col].push_back(row);
+                            }
+                            else
+                            {
+                                endJsPerI[row].push_back(col);
+                            }
+                        }
+                        const auto& maxEndIAndJs = std::max_element(endJsPerI.begin(),
+                            endJsPerI.end(), [](const auto& lhs, const auto& rhs) {
+                                return std::get<1>(lhs).size() < std::get<1>(rhs).size();});
+                        if(maxEndIAndJs != endJsPerI.end())
+                        {
+                            bestEndIAndOwnIPerPathway[pathway] = std::tuple(*maxEndIAndJs, i);
+                        }
+                        startAndEndIndicesPerPathway[pathway] = std::tuple(std::move(startJsPerI), std::move(endJsPerI));
                     }
                 }
-                for(const auto& [row,col] : reachableTargetSitesPerPathway[pathway - 1])
-                {
-                    if(vertical)
-                    {
-                        endJsPerI[col].push_back(row);
-                    }
-                    else
-                    {
-                        endJsPerI[row].push_back(col);
-                    }
-                }
-                startAndEndIndicesPerPathwayPerI[pathway] = std::tuple(std::move(startJsPerI), std::move(endJsPerI));
             }
+
             for(const auto& [row, col, pathwayNegative, pathwayPositive] : validSourceSitesThatCanServeTwoPathwayPerI[i])
             {
-                auto& [negativeSideStartJsPerI, negativeSideEndJsPerI] = startAndEndIndicesPerPathwayPerI[pathwayNegative];
-                auto& [positiveSideStartJsPerI, positiveSideEndJsPerI] = startAndEndIndicesPerPathwayPerI[pathwayPositive];
+                if(!bestStartIAndOwnIPerPathway.contains(pathwayNegative))
+                {
+                    bestStartIAndOwnIPerPathway[pathwayNegative] = std::tuple(std::tuple(vertical ? col : row, std::vector({vertical ? row : col})), i);
+                }
+                else if(std::get<0>(std::get<0>(bestStartIAndOwnIPerPathway[pathwayNegative])) == 
+                    (vertical ? col : row))
+                {
+                    std::get<1>(std::get<0>(bestStartIAndOwnIPerPathway[pathwayNegative])).
+                        push_back(vertical ? row : col);
+                }
+                if(!bestStartIAndOwnIPerPathway.contains(pathwayPositive))
+                {
+                    bestStartIAndOwnIPerPathway[pathwayPositive] = std::tuple(std::tuple(vertical ? col : row, std::vector({vertical ? row : col})), i);
+                }
+                else if(std::get<0>(std::get<0>(bestStartIAndOwnIPerPathway[pathwayPositive])) == 
+                    (vertical ? col : row))
+                {
+                    std::get<1>(std::get<0>(bestStartIAndOwnIPerPathway[pathwayPositive])).
+                        push_back(vertical ? row : col);
+                }
+
+                auto& [negativeSideStartJsPerI, negativeSideEndJsPerI] = startAndEndIndicesPerPathway[pathwayNegative];
+                auto& [positiveSideStartJsPerI, positiveSideEndJsPerI] = startAndEndIndicesPerPathway[pathwayPositive];
                 size_t sourceI;
                 size_t sourceJ;
                 if(vertical)
@@ -1335,19 +1616,19 @@ std::optional<std::tuple<ParallelMove,double>> findPathwayMove(
                 
                 int negativeSideDiff = 0;
                 int positiveSideDiff = 0;
-                for(const auto& negativeSideStartJs : negativeSideStartJsPerI)
+                for(const auto& [i,negativeSideStartJs] : negativeSideStartJsPerI)
                 {
                     negativeSideDiff += negativeSideStartJs.size();
                 }
-                for(const auto& negativeSideEndJs : negativeSideEndJsPerI)
+                for(const auto& [i,negativeSideEndJs] : negativeSideEndJsPerI)
                 {
                     negativeSideDiff -= negativeSideEndJs.size();
                 }
-                for(const auto& positiveSideStartJs : positiveSideStartJsPerI)
+                for(const auto& [i,positiveSideStartJs] : positiveSideStartJsPerI)
                 {
                     positiveSideDiff += positiveSideStartJs.size();
                 }
-                for(const auto& positiveSideEndJs : positiveSideEndJsPerI)
+                for(const auto& [i,positiveSideEndJs] : positiveSideEndJsPerI)
                 {
                     positiveSideDiff -= positiveSideEndJs.size();
                 }
@@ -1365,107 +1646,206 @@ std::optional<std::tuple<ParallelMove,double>> findPathwayMove(
                     positiveSideStartJsPerI[sourceI].push_back(sourceJ);
                 }
             }
-            for(unsigned int pathway : pathwaysPerIndex[i])
+            std::map<std::tuple<Eigen::Index,Eigen::Index>, double> movablePerStartAndEndI;
+            unsigned int bestLocalToneCount = 0;
+            Eigen::Index bestStartI = 0, bestEndI = 0;
+            for(const auto& [pathway, startAndEndJsPerI] : startAndEndIndicesPerPathway)
             {
-                const auto& [startJsPerI, endJsPerI] = startAndEndIndicesPerPathwayPerI[pathway];
-                for(size_t startI = 0; startI < (size_t)outerDimSize; startI++)
+                const auto& [startJsPerI, endJsPerI] = startAndEndJsPerI;
+                if(!startJsPerI.empty() && !endJsPerI.empty())
                 {
-                    if(startJsPerI[startI].size() > 0)
+                    for(const auto& [startI, startJs] : startJsPerI)
                     {
-                        for(size_t endI = 0; endI < (size_t)outerDimSize; endI++)
+                        if(startJs.size() > 0)
                         {
-                            if(endJsPerI[endI].size() > 0)
+                            for(const auto& [endI, endJs] : endJsPerI)
                             {
-                                movablePerStartAndEndI(startI, endI) += startJsPerI[startI].size() < endJsPerI[endI].size() ? 
-                                    startJsPerI[startI].size() : endJsPerI[endI].size();
+                                if(endJs.size() > 0)
+                                {
+                                    double newToneCount = movablePerStartAndEndI[std::tuple(startI, endI)] + (startJs.size() < endJs.size() ? 
+                                        startJs.size() : endJs.size());
+                                    movablePerStartAndEndI[std::tuple(startI, endI)] = newToneCount;
+                                    if(newToneCount > bestLocalToneCount)
+                                    {
+                                        bestStartI = startI;
+                                        bestEndI = endI;
+                                        bestLocalToneCount = newToneCount;
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
-            Eigen::Index startI, endI;
-            unsigned int maxShifted = movablePerStartAndEndI.maxCoeff(&startI, &endI);
-            double maxIntPerCost = maxShifted / (MOVE_COST_OFFSET + costPerSubMove(abs((int)i - startI)) + costPerSubMove(abs((int)i - endI)));
-            if(maxIntPerCost > bestLocalIntPerCost && maxIntPerCost > bestIntPerCost && maxShifted > 0)
+            if(bestLocalToneCount > 0)
             {
-                ParallelMove move;
-                ParallelMove::Step start;
-                ParallelMove::Step step1;
-                ParallelMove::Step step2;
-                ParallelMove::Step end;
-                std::vector<double> *startIndices;
-                std::vector<double> *endIndices;
-                if(vertical)
+                unsigned int maxTones = AOD_TOTAL_LIMIT;
+                if(vertical && maxTones > AOD_ROW_LIMIT)
                 {
-                    start.colSelection.push_back(startI);
-                    step1.colSelection.push_back((double)i / 2);
-                    step2.colSelection.push_back((double)i / 2);
-                    end.colSelection.push_back(endI);
-                    startIndices = &start.rowSelection;
-                    endIndices = &end.rowSelection;
+                    maxTones = AOD_ROW_LIMIT;
                 }
-                else
+                else if(!vertical && maxTones > AOD_COL_LIMIT)
                 {
-                    start.rowSelection.push_back(startI);
-                    step1.rowSelection.push_back((double)i / 2);
-                    step2.rowSelection.push_back((double)i / 2);
-                    end.rowSelection.push_back(endI);
-                    startIndices = &start.colSelection;
-                    endIndices = &end.colSelection;
+                    maxTones = AOD_COL_LIMIT;
                 }
-                for(unsigned int pathway : pathwaysPerIndex[i])
+                if(bestLocalToneCount > maxTones)
                 {
-                    const auto& [startJsPerI, endJsPerI] = startAndEndIndicesPerPathwayPerI[pathway];
-                    const auto& startJs = startJsPerI[startI];
-                    const auto& endJs = endJsPerI[endI];
-                    size_t sitesRequired = startJs.size() < endJs.size() ? startJs.size() : endJs.size();
-                    if(sitesRequired > 0)
+                    bestLocalToneCount = maxTones;
+                }
+                bool withinCompZone = bestStartI >= (int)(vertical ? compZoneColStart : compZoneRowStart) && bestStartI < (int)(vertical ? compZoneColEnd : compZoneRowEnd);
+                double maxBenefitPerCost = bestLocalToneCount * (VALUE_FILLED_DESIRED + (withinCompZone ? VALUE_USED_UNDESIRED : 0)) / 
+                    (MOVE_COST_OFFSET + costPerSubMove(abs((int)i - bestStartI)) + costPerSubMove(abs((int)i - bestEndI)));
+                if(maxBenefitPerCost > bestLocalBenefitPerCost && maxBenefitPerCost > bestIntPerCost && bestLocalToneCount > 0)
+                {
+                    ParallelMove move;
+                    ParallelMove::Step start;
+                    ParallelMove::Step step1;
+                    ParallelMove::Step step2;
+                    ParallelMove::Step end;
+                    std::vector<double> *startIndices;
+                    std::vector<double> *endIndices;
+                    if(vertical)
                     {
-                        for(size_t siteIndex = 0; siteIndex < sitesRequired; siteIndex++)
+                        start.colSelection.push_back(bestStartI);
+                        step1.colSelection.push_back((double)i / 2);
+                        step2.colSelection.push_back((double)i / 2);
+                        end.colSelection.push_back(bestEndI);
+                        startIndices = &start.rowSelection;
+                        endIndices = &end.rowSelection;
+                    }
+                    else
+                    {
+                        start.rowSelection.push_back(bestStartI);
+                        step1.rowSelection.push_back((double)i / 2);
+                        step2.rowSelection.push_back((double)i / 2);
+                        end.rowSelection.push_back(bestEndI);
+                        startIndices = &start.colSelection;
+                        endIndices = &end.colSelection;
+                    }
+                    for(const auto& [pathway, startAndEndJsPerI] : startAndEndIndicesPerPathway)
+                    {
+                        const auto& [startJsPerI, endJsPerI] = startAndEndJsPerI;
+                        if(startJsPerI.contains((size_t)bestStartI) && endJsPerI.contains((size_t)bestEndI))
                         {
-                            startIndices->insert(std::upper_bound(startIndices->begin(), startIndices->end(), startJs[siteIndex]), startJs[siteIndex]);
-                            endIndices->insert(std::upper_bound(endIndices->begin(), endIndices->end(), endJs[siteIndex]), endJs[siteIndex]);
+                            const auto& startJs = startJsPerI.at((size_t)bestStartI);
+                            const auto& endJs = endJsPerI.at((size_t)bestEndI);
+                            size_t sitesRequired = startJs.size() < endJs.size() ? startJs.size() : endJs.size();
+                            if(sitesRequired + startIndices->size() > maxTones)
+                            {
+                                sitesRequired = maxTones - startIndices->size();
+                            }
+                            if(sitesRequired > 0)
+                            {
+                                for(size_t siteIndex = 0; siteIndex < sitesRequired; siteIndex++)
+                                {
+                                    startIndices->insert(std::upper_bound(startIndices->begin(), startIndices->end(), startJs[siteIndex]), startJs[siteIndex]);
+                                    endIndices->insert(std::upper_bound(endIndices->begin(), endIndices->end(), endJs[siteIndex]), endJs[siteIndex]);
+                                }
+                            }
+                        }
+                    }
+
+                    double moveBenefit = start.rowSelection.size() * start.colSelection.size() * VALUE_FILLED_DESIRED;
+                    for(const auto& row : start.rowSelection)
+                    {
+                        if(row >= compZoneRowStart && row < compZoneRowEnd)
+                        {
+                            for(const auto& col : start.colSelection)
+                            {
+                                if(col >= compZoneColStart && col < compZoneColEnd)
+                                {
+                                    moveBenefit += VALUE_USED_UNDESIRED;
+                                }
+                            }
+                        }
+                    }
+                    move.steps.push_back(start);
+                    if((int)i != bestStartI * 2)
+                    {
+                        if(vertical)
+                        {
+                            step1.rowSelection = start.rowSelection;
+                        }
+                        else
+                        {
+                            step1.colSelection = start.colSelection;
+                        }
+                        move.steps.push_back(std::move(step1));
+                    }
+                    if((int)i != bestEndI * 2)
+                    {
+                        if(vertical)
+                        {
+                            step2.rowSelection = end.rowSelection;
+                        }
+                        else
+                        {
+                            step2.colSelection = end.colSelection;
+                        }
+                        move.steps.push_back(std::move(step2));
+                    }
+                    move.steps.push_back(std::move(end));
+                    double actualBenefitPerCost = moveBenefit / move.cost();
+                    if(actualBenefitPerCost > bestLocalBenefitPerCost)
+                    {
+                        bestLocalBenefitPerCost = actualBenefitPerCost;
+                        bestMove = std::move(move);
+                        bestToneCount = bestLocalToneCount;
+                    }
+                }
+            }
+        }
+        logger->debug("Time for iterating over all indices: {}us", (double)((std::chrono::steady_clock::now() - startTime).count()) / 1000.);
+        startTime = std::chrono::steady_clock::now();
+
+        // Try to find move that uses two pathways that are connected by a number of perpendicular pathways
+        // Since this is generally longer, only consider pathways that have more source/target sites and connecting pathways than the best currently known move uses
+        std::erase_if(bestStartIAndOwnIPerPathway, [bestToneCount, &intersectingPathways, vertical](const auto& item)
+        {
+            return std::get<1>(std::get<0>(std::get<1>(item))).size() <= bestToneCount || 
+                intersectingPathways[vertical][std::get<0>(item)].size() <= bestToneCount;
+        });
+        std::erase_if(bestEndIAndOwnIPerPathway, [bestToneCount, &intersectingPathways, vertical](const auto& item)
+        {
+            return std::get<1>(std::get<0>(std::get<1>(item))).size() <= bestToneCount || 
+                intersectingPathways[vertical][std::get<0>(item)].size() <= bestToneCount;
+        });
+        
+        auto move = checkIntersectingPathwayMove(intersectingPathways[vertical], 
+            bestStartIAndOwnIPerPathway, bestEndIAndOwnIPerPathway, vertical, logger);
+        if(move.has_value())
+        {
+            double moveBenefit = move.value().steps[0].rowSelection.size() * move.value().steps[0].colSelection.size() * VALUE_FILLED_DESIRED;
+            for(const auto& row : move.value().steps[0].rowSelection)
+            {
+                if(row >= compZoneRowStart && row < compZoneRowEnd)
+                {
+                    for(const auto& col : move.value().steps[0].colSelection)
+                    {
+                        if(col >= compZoneColStart && col < compZoneColEnd)
+                        {
+                            moveBenefit += VALUE_USED_UNDESIRED;
                         }
                     }
                 }
-                move.steps.push_back(start);
-                if((int)i != startI * 2)
-                {
-                    if(vertical)
-                    {
-                        step1.rowSelection = start.rowSelection;
-                    }
-                    else
-                    {
-                        step1.colSelection = start.colSelection;
-                    }
-                    move.steps.push_back(std::move(step1));
-                }
-                if((int)i != endI * 2)
-                {
-                    if(vertical)
-                    {
-                        step2.rowSelection = end.rowSelection;
-                    }
-                    else
-                    {
-                        step2.colSelection = end.colSelection;
-                    }
-                    move.steps.push_back(std::move(step2));
-                }
-                move.steps.push_back(std::move(end));
-                bestLocalIntPerCost = maxShifted / move.cost();
-                bestMove = std::move(move);
+            }
+            moveBenefit /= move.value().cost();
+            if(moveBenefit > bestLocalBenefitPerCost)
+            {
+                bestMove = move.value();
+                bestLocalBenefitPerCost = moveBenefit;
             }
         }
+        logger->debug("Time for finding intersecting pathway move: {}us", (double)((std::chrono::steady_clock::now() - startTime).count()) / 1000.);
+        startTime = std::chrono::steady_clock::now();
     }
 
     if(bestMove.has_value())
     {
         logger->info("Returning pathway move that fills {}, filledPerCost: {}", 
             bestMove.value().steps[0].rowSelection.size() * bestMove.value().steps[0].colSelection.size(), 
-            bestLocalIntPerCost);
-        return std::tuple(bestMove.value(), bestLocalIntPerCost);
+            bestLocalBenefitPerCost);
+        return std::tuple(bestMove.value(), bestLocalBenefitPerCost);
     }
     else
     {
@@ -1474,12 +1854,677 @@ std::optional<std::tuple<ParallelMove,double>> findPathwayMove(
     }
 }
 
+bool handleUnusableSection(std::vector<std::tuple<bool,int>>::iterator unusableSectionStart,
+    std::vector<std::tuple<bool,int>>::iterator sectionEndExclusive, int firstFinalLocation, int lastFinalLocation, int blockingDist,
+    std::vector<std::tuple<int,int>>& newShifts, std::shared_ptr<spdlog::logger> logger)
+{
+    bool first = true;
+    bool lastAtomUsable = false;
+    int lastShiftedAtomLocation = firstFinalLocation - 1;
+    for(auto unusableAtom = unusableSectionStart; unusableAtom != sectionEndExclusive; unusableAtom++)
+    {
+        const auto& [usable, sourceLocation] = *unusableAtom;
+        if(!first)
+        {
+            firstFinalLocation++;
+            if(usable || lastAtomUsable)
+            {
+                firstFinalLocation += (int)blockingDist;
+            }
+        }
+        first = false;
+    
+        if(usable && !ALLOW_MULTIPLE_MOVES_PER_ATOM && sourceLocation < firstFinalLocation)
+        {
+            logger->warn("Atom may not be moved to non-target position as another move would not be allowed");
+            return false;
+        }
+        else if(firstFinalLocation > lastFinalLocation)
+        {
+            logger->warn("No more parking position for unusable atom in linear move found");
+            return false;
+        }
+        else if(sourceLocation >= firstFinalLocation)
+        {
+            firstFinalLocation = sourceLocation;
+            break;
+        }
+
+        lastShiftedAtomLocation = firstFinalLocation;
+        newShifts.push_back(std::tuple(sourceLocation, firstFinalLocation));
+        lastAtomUsable = usable;
+    }
+    first = true;
+    for(auto unusableAtom = std::make_reverse_iterator(sectionEndExclusive); unusableAtom != std::make_reverse_iterator(unusableSectionStart); unusableAtom++)
+    {
+        const auto& [usable, sourceLocation] = *unusableAtom;
+        if(!first)
+        {
+            lastFinalLocation--;
+            if(usable || lastAtomUsable)
+            {
+                lastFinalLocation -= (int)blockingDist;
+            }
+        }
+        first = false;
+    
+        if(usable && !ALLOW_MULTIPLE_MOVES_PER_ATOM && sourceLocation > lastFinalLocation)
+        {
+            logger->warn("Atom may not be moved to non-target position as another move would not be allowed");
+            return false;
+        }
+        else if(lastFinalLocation <= lastShiftedAtomLocation)
+        {
+            logger->warn("Left-shifting part of linearly moving unusable atoms overlaps with right-shifting one");
+            return false;
+        }
+        else if(sourceLocation <= lastFinalLocation)
+        {
+            firstFinalLocation = sourceLocation;
+            break;
+        }
+
+        newShifts.push_back(std::tuple(sourceLocation, lastFinalLocation));
+        lastAtomUsable = usable;
+    }
+    return true;
+}
+
+std::optional<std::tuple<std::vector<std::tuple<int,int>>, double>> analyzeLinearMovementStretch(
+    const py::EigenDRef<const Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &targetGeometry,
+    bool vertical, int outerIndex, std::vector<std::tuple<bool,int>>& sourceAtoms, int& sectionStart, int sectionEnd, 
+    size_t innerDimMax, bool sectionOverlapsCompZone,
+    unsigned int blockingDist, size_t compZoneStart, size_t compZoneEnd, size_t outerCompZoneStart, 
+    std::shared_ptr<spdlog::logger> logger)
+{
+    std::vector<std::tuple<int,int>> newShifts;
+    double shiftBenefit = 0;
+
+    std::vector<std::tuple<bool,int>> compZoneOrder; // 1 means requires usable atom, 0 means parking spot
+    std::vector<size_t> targetSitesInCompZoneOrder;
+    unsigned int nonTargetLength = 0;
+    bool firstSection = true;
+    for(int index = sectionStart; index < sectionEnd; index++)
+    {
+        if(index < (int)compZoneStart || index >= (int)compZoneEnd || 
+            ((vertical && !targetGeometry(index - compZoneStart, outerIndex - outerCompZoneStart)) ||
+            (!vertical && !targetGeometry(outerIndex - outerCompZoneStart, index - compZoneStart))))
+        {
+            nonTargetLength++;
+        }
+        else
+        {
+            if(firstSection)
+            {
+                firstSection = false;
+            }
+            int gapBefore = firstSection ? 0 : blockingDist;
+            if((int)nonTargetLength >= (int)blockingDist + 1 + gapBefore)
+            {
+                for(int backIndex = index - nonTargetLength + gapBefore; 
+                    backIndex < index - (int)blockingDist; backIndex++)
+                {
+                    if(backIndex >= (int)compZoneStart && backIndex < (int)compZoneEnd)
+                    {
+                        compZoneOrder.push_back(std::tuple(false, backIndex));
+                    }
+                }
+            }
+            compZoneOrder.push_back(std::tuple(true, index));
+            targetSitesInCompZoneOrder.push_back(compZoneOrder.size() - 1);
+            firstSection = false;
+            nonTargetLength = 0;
+        }
+    }
+    int gapBefore = firstSection ? 0 : blockingDist;
+    if((int)nonTargetLength >= gapBefore + 1)
+    {
+        for(int backIndex = sectionEnd - nonTargetLength + gapBefore; 
+            backIndex < sectionEnd; backIndex++)
+        {
+            if(backIndex >= (int)compZoneStart && backIndex < (int)compZoneEnd)
+            {
+                compZoneOrder.push_back(std::tuple(false, backIndex));
+            }
+        }
+    }
+
+    if(sectionStart == 0)
+    {
+        for(auto iter = sourceAtoms.begin(); iter != sourceAtoms.end();)
+        {
+            const auto& [usable, atomIndex] = *iter;
+            if(usable)
+            {
+                break;
+            }
+            else
+            {
+                newShifts.push_back(std::tuple(atomIndex, -1));
+                shiftBenefit += ((atomIndex >= compZoneStart && atomIndex < compZoneEnd) ? 
+                    VALUE_CLEARED_UNDESIRED_UNUSABLE : VALUE_CLEARED_OUTSIDE_UNUSABLE);
+                iter = sourceAtoms.erase(iter);
+            }
+        }
+    }
+    if(sectionEnd == innerDimMax)
+    {
+        for(auto iter = sourceAtoms.rbegin(); iter != sourceAtoms.rend();)
+        {
+            const auto& [usable, atomIndex] = *iter;
+            if(usable)
+            {
+                break;
+            }
+            else
+            {
+                newShifts.push_back(std::tuple(atomIndex, innerDimMax));
+                shiftBenefit += ((atomIndex >= compZoneStart && atomIndex < compZoneEnd) ? 
+                    VALUE_CLEARED_UNDESIRED_UNUSABLE : VALUE_CLEARED_OUTSIDE_UNUSABLE);
+                sourceAtoms.erase((++iter).base());
+            }
+        }
+    }
+
+    // Only try to shift atoms if there are valid source and target sites
+    if(targetSitesInCompZoneOrder.size() > 0 && std::find_if(sourceAtoms.begin(), sourceAtoms.end(), 
+        [](const auto& val)
+        {
+            return std::get<0>(val);
+        }) != sourceAtoms.end())
+    {
+        std::vector<std::tuple<std::vector<std::tuple<bool,int>>::iterator,size_t>> 
+            bestUsedAtomsAndTargetSites;
+
+        int minimumTargetSpot = sectionStart - (int)blockingDist - 1;
+        bool lastAtomUsable = true;
+        const int lastTargetSite = std::get<1>(compZoneOrder[targetSitesInCompZoneOrder.back()]);
+        for(auto iter = sourceAtoms.begin(); iter != sourceAtoms.end(); iter++)
+        {
+            const auto& [firstAtomUsable, firstAtomLocation] = *iter;
+
+            bool atomMovable = true;
+            bool requiresGap = iter != sourceAtoms.begin() || (!firstAtomUsable && !lastAtomUsable);
+
+            int shiftedAtomLocation = minimumTargetSpot;
+            bool lastShiftedAtomUsable = lastAtomUsable;
+            bool targetSitesRemaining = true;
+            bool thisAtomAsStartAllowed = true;
+
+            std::vector<std::tuple<std::vector<std::tuple<bool,int>>::iterator,size_t>> 
+                usedAtomsAndTargetSites;
+
+            for(auto compZoneIter = iter; compZoneIter != sourceAtoms.end(); compZoneIter++)
+            {
+                const auto& [usable, atomLocation] = *compZoneIter;
+                if(usable && targetSitesRemaining)
+                {
+                    auto shiftIndex = std::find_if(targetSitesInCompZoneOrder.begin(), targetSitesInCompZoneOrder.end(),
+                        [&compZoneOrder, &shiftedAtomLocation, &blockingDist](const auto& targetSiteIndex)
+                        {
+                            return std::get<1>(compZoneOrder[targetSiteIndex]) > shiftedAtomLocation + (int)blockingDist;
+                        });
+                    if(shiftIndex != targetSitesInCompZoneOrder.end())
+                    {
+                        shiftedAtomLocation = std::get<1>(compZoneOrder[*shiftIndex]);
+                        usedAtomsAndTargetSites.push_back(std::tuple(compZoneIter, shiftedAtomLocation));
+                    }
+                    else
+                    {
+                        targetSitesRemaining = false;
+                    }
+                }
+                if(!usable || !targetSitesRemaining)
+                {
+                    shiftedAtomLocation++;
+                    if(lastShiftedAtomUsable || usable)
+                    {
+                        shiftedAtomLocation += blockingDist;
+                    }
+                }
+                if(shiftedAtomLocation >= lastTargetSite)
+                {
+                    targetSitesRemaining = false;
+                }
+                if(!targetSitesRemaining && shiftedAtomLocation <= atomLocation)
+                {
+                    break;
+                }
+                if(shiftedAtomLocation >= sectionEnd)
+                {
+                    thisAtomAsStartAllowed = false;
+                    break;
+                }
+            }
+            if(thisAtomAsStartAllowed && usedAtomsAndTargetSites.size() > bestUsedAtomsAndTargetSites.size())
+            {
+                bestUsedAtomsAndTargetSites = usedAtomsAndTargetSites;
+            }
+
+            if(firstAtomUsable && !ALLOW_MULTIPLE_MOVES_PER_ATOM)
+            {
+                minimumTargetSpot = firstAtomLocation;
+            }
+            else
+            {
+                minimumTargetSpot++;
+                if(requiresGap)
+                {
+                    minimumTargetSpot += blockingDist;
+                }
+            }
+
+            lastAtomUsable = firstAtomUsable;
+        }
+
+        if(bestUsedAtomsAndTargetSites.size() > 0)
+        {
+            std::vector<std::tuple<bool,int>>::iterator unusableSectionStart = sourceAtoms.begin();
+            int firstUsableTargetLocation = sectionStart;
+
+            for(const auto& [usedAtom, targetSite] : bestUsedAtomsAndTargetSites)
+            {
+                if(!handleUnusableSection(unusableSectionStart, usedAtom, firstUsableTargetLocation, targetSite - (int)blockingDist - 1, blockingDist, newShifts, logger))
+                {
+                    return std::nullopt;
+                }
+                int usedSourceLocation = std::get<1>(*usedAtom);
+                newShifts.push_back(std::tuple(usedSourceLocation, targetSite));
+                shiftBenefit += VALUE_FILLED_DESIRED;
+                if(usedSourceLocation >= (int)compZoneStart && usedSourceLocation < (int)compZoneEnd &&
+                    ((vertical && !targetGeometry(usedSourceLocation - compZoneStart, outerIndex - outerCompZoneStart)) ||
+                    (!vertical && !targetGeometry(outerIndex - outerCompZoneStart, usedSourceLocation - compZoneStart))))
+                {
+                    shiftBenefit += VALUE_USED_UNDESIRED;
+                }
+                unusableSectionStart = usedAtom + 1;
+                firstUsableTargetLocation = targetSite + (int)blockingDist + 1;
+            }
+            if(!handleUnusableSection(unusableSectionStart, sourceAtoms.end(), firstUsableTargetLocation, sectionEnd - 1, blockingDist, newShifts, logger))
+            {
+                return std::nullopt;
+            }
+
+            logger->debug("Best starting atom can fill {} positions", bestUsedAtomsAndTargetSites.size());
+            return std::tuple(newShifts, shiftBenefit);
+        }
+    }
+
+    return std::nullopt;
+}
+
+std::optional<std::tuple<ParallelMove, double>> findLinearMove(
+    Eigen::Ref<Eigen::Array<unsigned int,Eigen::Dynamic,Eigen::Dynamic>> penalizedPathway, 
+    const Eigen::Ref<const Eigen::Array<unsigned int,Eigen::Dynamic,Eigen::Dynamic>>& pathway,
+    const Eigen::Ref<const Eigen::Array<unsigned int,Eigen::Dynamic,Eigen::Dynamic>>& labelledPathway,
+    const py::EigenDRef<const Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &stateArray,
+    const py::EigenDRef<const Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &targetGeometry,
+    std::set<std::tuple<size_t,size_t>>& unusableAtoms, std::set<std::tuple<size_t,size_t>>& usableAtoms, 
+    std::set<std::tuple<size_t,size_t>>& usableTargetSites,
+    size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd,
+    size_t borderRows, size_t borderCols, double bestIntPerCost, std::shared_ptr<spdlog::logger> logger)
+{
+    std::optional<ParallelMove> bestMove;
+    double bestBenefitPerCost = 0;
+    for(bool vertical : {true, false})
+    {
+        unsigned int maxTones = AOD_TOTAL_LIMIT;
+        if(vertical && maxTones > AOD_ROW_LIMIT)
+        {
+            maxTones = AOD_ROW_LIMIT;
+        }
+        else if(!vertical && maxTones > AOD_COL_LIMIT)
+        {
+            maxTones = AOD_COL_LIMIT;
+        }
+
+        size_t outerStartIndex, outerEndIndex, innerCompZoneStart, innerCompZoneEnd, innerEndIndex;
+        if(vertical)
+        {
+            outerStartIndex = compZoneColStart;
+            outerEndIndex = compZoneColEnd;
+            innerCompZoneStart = compZoneRowStart;
+            innerCompZoneEnd = compZoneRowEnd;
+            innerEndIndex = stateArray.rows();
+        }
+        else
+        {
+            outerStartIndex = compZoneRowStart;
+            outerEndIndex = compZoneRowEnd;
+            innerCompZoneStart = compZoneColStart;
+            innerCompZoneEnd = compZoneColEnd;
+            innerEndIndex = stateArray.cols();
+        }
+
+        int blockingDistAlongIndex = ceil((double)MIN_DIST_FROM_OCC_SITES / 
+            (vertical ? (double)ROW_SPACING : (double)COL_SPACING)) - 1;
+        size_t innerDimMax = vertical ? stateArray.rows() : stateArray.cols();
+        for(size_t outerIndex = outerStartIndex; outerIndex < outerEndIndex; outerIndex++)
+        {
+            Eigen::Array<unsigned int, -1, 1> pathwayAlongIndex;
+            if(vertical)
+            {
+                pathwayAlongIndex = penalizedPathway.col(borderCols + 2 * outerIndex)(Eigen::seqN(borderRows, stateArray.rows(), 2));
+            }
+            else
+            {
+                pathwayAlongIndex = penalizedPathway.row(borderRows + 2 * outerIndex)(Eigen::seqN(borderCols, stateArray.cols(), 2));
+            }
+
+            for(size_t innerIndex = 0; innerIndex < innerEndIndex; innerIndex++)
+            {
+                Eigen::Index row = vertical ? innerIndex : outerIndex;
+                Eigen::Index col = vertical ? outerIndex : innerIndex;
+                if(stateArray(row, col))
+                {
+                    Eigen::Index sliceStart = innerIndex - blockingDistAlongIndex;
+                    if(sliceStart < 0)
+                    {
+                        sliceStart = 0;
+                    }
+                    size_t sliceEnd = innerIndex + blockingDistAlongIndex;
+                    if(sliceEnd >= innerEndIndex)
+                    {
+                        sliceEnd = innerEndIndex - 1;
+                    }
+                    pathwayAlongIndex(Eigen::seq(sliceStart, sliceEnd)) -= 1;
+                }
+            }
+
+            int sectionStart = 0;
+            std::vector<std::tuple<bool,int>> sourceAtoms;
+            bool sectionOverlapsCompZone = false;
+            bool inSection = false;
+            bool sectionContainsUsableAtoms = false;
+            bool sectionContainsTargetSites = false;
+            std::vector<std::tuple<std::vector<std::tuple<int,int>>, double>> shiftsPerSection;
+            for(size_t innerIndex = 0; innerIndex < innerDimMax; innerIndex++)
+            {
+                bool terminateSection = false;
+                Eigen::Index row = vertical ? innerIndex : outerIndex;
+                Eigen::Index col = vertical ? outerIndex : innerIndex;
+                bool inCompZone = innerIndex >= innerCompZoneStart && innerIndex < innerCompZoneEnd;
+                // Don't move past a point that is a non-pathway due to external atoms
+                if(pathwayAlongIndex(innerIndex) > 0)
+                {
+                    terminateSection = true;
+                    if(inSection)
+                    {
+                        if(sectionStart == 0 || (sectionContainsTargetSites && sectionContainsUsableAtoms))
+                        {
+                            auto localShifts = analyzeLinearMovementStretch(targetGeometry, vertical, outerIndex, sourceAtoms, sectionStart, 
+                                innerIndex, innerDimMax, sectionOverlapsCompZone, blockingDistAlongIndex, innerCompZoneStart,
+                                innerCompZoneEnd, outerStartIndex, logger);
+                            if(localShifts.has_value())
+                            {
+                                shiftsPerSection.push_back(std::move(localShifts.value()));
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    if(stateArray(row, col))
+                    {
+                        bool usable = !unusableAtoms.contains(std::tuple(row, col));
+                        if(usable)
+                        {
+                            if(inCompZone && targetGeometry(row - compZoneRowStart, col - compZoneColStart) && 
+                                !ALLOW_MULTIPLE_MOVES_PER_ATOM)
+                            {
+                                terminateSection = true;
+                                if(inSection)
+                                {
+                                    if(sectionStart == 0 || (sectionContainsTargetSites && sectionContainsUsableAtoms))
+                                    {
+                                        auto localShifts = analyzeLinearMovementStretch(targetGeometry, vertical, outerIndex, sourceAtoms, sectionStart, 
+                                            innerIndex - blockingDistAlongIndex, innerDimMax, sectionOverlapsCompZone, blockingDistAlongIndex, innerCompZoneStart,
+                                            innerCompZoneEnd, outerStartIndex, logger);
+                                        if(localShifts.has_value())
+                                        {
+                                            shiftsPerSection.push_back(std::move(localShifts.value()));
+                                        }
+                                    }
+                                    innerIndex += blockingDistAlongIndex;
+                                }
+                            }
+                            else
+                            {
+                                sectionContainsUsableAtoms = true;
+                                sourceAtoms.push_back(std::tuple(true, innerIndex));
+                            }
+                        }
+                        else
+                        {
+                            sourceAtoms.push_back(std::tuple(false, innerIndex));
+                        }
+                    }
+                }
+
+                if(terminateSection)
+                {
+                    sourceAtoms.clear();
+                    sectionOverlapsCompZone = false;
+                    inSection = false;
+                    sectionContainsUsableAtoms = false;
+                    sectionContainsTargetSites = false;
+                }
+                else
+                {
+                    sectionOverlapsCompZone = sectionOverlapsCompZone || inCompZone;
+                    if(inCompZone)
+                    {
+                        sectionContainsTargetSites = sectionContainsTargetSites || targetGeometry(row - compZoneRowStart, col - compZoneColStart);
+                    }
+                    if(!inSection)
+                    {
+                        sectionStart = innerIndex;
+                    }
+                    inSection = true;
+                }
+            }
+            if(inSection)
+            {
+                auto localShifts = analyzeLinearMovementStretch(targetGeometry, vertical, outerIndex, sourceAtoms, sectionStart, 
+                    innerDimMax, innerDimMax, sectionOverlapsCompZone, blockingDistAlongIndex, innerCompZoneStart,
+                    innerCompZoneEnd, outerStartIndex, logger);
+                if(localShifts.has_value())
+                {
+                    shiftsPerSection.push_back(std::move(localShifts.value()));
+                }
+            }
+
+            double totalBenefit = 0;
+            unsigned int sumOfRequiredMoves = 0;
+            for(const auto& [shifts, benefit] : shiftsPerSection)
+            {
+                totalBenefit += benefit;
+                sumOfRequiredMoves += shifts.size();
+            }
+            std::vector<std::tuple<int,int>> plannedShifts;
+            if(sumOfRequiredMoves > maxTones)
+            {
+                std::sort(shiftsPerSection.begin(), shiftsPerSection.end(), [](const auto& lhs, const auto& rhs)
+                    {
+                        return std::get<1>(lhs) / std::get<0>(lhs).size() > std::get<1>(rhs) / std::get<0>(rhs).size();
+                    });
+                totalBenefit = 0;
+                sumOfRequiredMoves = 0;
+                for(auto iter = shiftsPerSection.begin(); iter != shiftsPerSection.end();)
+                {
+                    const auto& [shifts, benefit] = *iter;
+                    if(sumOfRequiredMoves + shifts.size() > maxTones)
+                    {
+                        iter = shiftsPerSection.erase(iter);
+                    }
+                    else
+                    {
+                        sumOfRequiredMoves += shifts.size();
+                        totalBenefit += benefit;
+                        iter++;
+                    }
+                }
+            }
+
+            int maxShiftDist = 0;
+            for(const auto& [shifts, benefit] : shiftsPerSection)
+            {
+                for(const auto& [shiftStart, shiftEnd] : shifts)
+                {
+                    int dist = abs(shiftEnd - shiftStart);
+                    if(dist > maxShiftDist)
+                    {
+                        maxShiftDist = dist;
+                    }
+                }
+            }
+
+            double benefitPerCost = totalBenefit / (MOVE_COST_OFFSET + costPerSubMove(maxShiftDist));
+            if(benefitPerCost > bestBenefitPerCost)
+            {
+                ParallelMove move;
+                ParallelMove::Step start, end;
+                std::vector<double> *startInnerSelection, *endInnerSelection;
+                if(vertical)
+                {
+                    start.colSelection.push_back(outerIndex);
+                    end.colSelection.push_back(outerIndex);
+                    startInnerSelection = &start.rowSelection;
+                    endInnerSelection = &end.rowSelection;
+                }
+                else
+                {
+                    start.rowSelection.push_back(outerIndex);
+                    end.rowSelection.push_back(outerIndex);
+                    startInnerSelection = &start.colSelection;
+                    endInnerSelection = &end.colSelection;
+                }
+                for(const auto& [shifts, benefit] : shiftsPerSection)
+                {
+                    for(const auto& [shiftStart, shiftEnd] : shifts)
+                    {
+                        startInnerSelection->push_back(shiftStart);
+                        endInnerSelection->push_back(shiftEnd);
+                    }
+                }
+                std::sort(startInnerSelection->begin(), startInnerSelection->end());
+                std::sort(endInnerSelection->begin(), endInnerSelection->end());
+                int count = 0;
+                for(double tone : *endInnerSelection)
+                {
+                    if(tone < 0)
+                    {
+                        count++;
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
+                for(int i = 0; i < count; i++)
+                {
+                    (*endInnerSelection)[i] = -count + i;
+                }
+                count = 0;
+                for(double tone : *endInnerSelection | std::views::reverse)
+                {
+                    if(tone > innerDimMax - 1)
+                    {
+                        count++;
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
+                for(int i = 0; i < count; i++)
+                {
+                    (*endInnerSelection)[endInnerSelection->size() - count + i] = innerDimMax + i;
+                }
+
+                move.steps.push_back(std::move(start));
+                move.steps.push_back(std::move(end));
+                bestMove = move;
+                bestBenefitPerCost = benefitPerCost;
+            }
+        }
+    }
+
+    if(bestMove.has_value())
+    {
+        logger->info("Returning linear move with {} tones and benefitPerCost: {}", 
+            bestMove.value().steps[0].rowSelection.size() * bestMove.value().steps[0].colSelection.size(), bestBenefitPerCost);
+        return std::tuple(bestMove.value(), bestBenefitPerCost);
+    }
+    else
+    {
+        logger->info("No better linear move could be found");
+        return std::nullopt;
+    }
+}
+
+bool canAtomsBeMovedSimultaneously(
+    Eigen::Ref<Eigen::Array<std::optional<std::tuple<int,int,double,unsigned int>>, Eigen::Dynamic, Eigen::Dynamic>> sitesPath,
+    const std::set<std::tuple<int,int>>& currentRemovalSet, const std::tuple<int,int>& otherMovableAtom, 
+    size_t moveDist, bool lastMoveVertical, int pathwayRowCount)
+{
+    for(const auto& existingNode : currentRemovalSet)
+    {
+        std::tuple<int,int> pathNode = existingNode;
+        std::tuple<int,int> otherNode = otherMovableAtom;
+        for(size_t i = 0; i <= moveDist; i++)
+        {
+            if(pathNode == otherNode)
+            {
+                return false;
+            }
+            const auto& nextPathNode = sitesPath(std::get<0>(pathNode), std::get<1>(pathNode));
+            const auto& nextOtherNode = sitesPath(std::get<0>(otherNode), std::get<1>(otherNode));
+            if(!nextPathNode.has_value() || !nextOtherNode.has_value())
+            {
+                return false;
+            }
+            else
+            {
+                if(lastMoveVertical)
+                {
+                    if(std::get<1>(pathNode) != std::get<1>(otherNode) || 
+                        (i < moveDist && ((std::get<0>(pathNode) < std::get<0>(otherNode)) != 
+                        (std::get<0>(nextPathNode.value()) < std::get<0>(nextOtherNode.value())))))
+                    {
+                        return false;
+                    }
+                }
+                else
+                {
+                    if(std::get<0>(pathNode) != std::get<0>(otherNode) || 
+                        (i < moveDist && ((std::get<1>(pathNode) < std::get<1>(otherNode)) != 
+                        (std::get<1>(nextPathNode.value()) < std::get<1>(nextOtherNode.value())))))
+                    {
+                        return false;
+                    }
+                }
+                pathNode = std::tuple(std::get<0>(nextPathNode.value()), std::get<1>(nextPathNode.value()));
+                otherNode = std::tuple(std::get<0>(nextOtherNode.value()), std::get<1>(nextOtherNode.value()));
+            }
+        }
+        bool otherLastVertical = std::get<0>(otherNode) == -1 ||
+            std::get<0>(otherNode) == pathwayRowCount;
+        if(otherLastVertical != lastMoveVertical)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 std::optional<std::tuple<ParallelMove,double>> removeAtomsInBorderPathway(
     py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &stateArray, 
     std::set<std::tuple<size_t,size_t>>& unusableAtoms, size_t compZoneRowStart, size_t compZoneRowEnd, 
-    size_t compZoneColStart, size_t compZoneColEnd, size_t borderRows, 
-    size_t borderCols, std::vector<ParallelMove>& moveList, std::shared_ptr<spdlog::logger> logger)
+    size_t compZoneColStart, size_t compZoneColEnd, size_t borderRows, size_t borderCols,
+    std::vector<ParallelMove>& moveList, std::shared_ptr<spdlog::logger> logger)
 {
+    auto startTime = std::chrono::steady_clock::now();
     // Generate pathway only for usable atoms. Since removed atoms are discarded, we don't care about heating -> Penalized pathway
     Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> stateArrayCopy = stateArray;
     for(const auto& [r, c] : unusableAtoms)
@@ -1489,18 +2534,6 @@ std::optional<std::tuple<ParallelMove,double>> removeAtomsInBorderPathway(
 
     auto pathway = generatePathway(borderRows, borderCols, stateArrayCopy, MIN_DIST_FROM_OCC_SITES, 0);
     auto [labelledPathway, labelCount] = labelPathway(pathway);
-
-    std::vector<std::tuple<size_t,size_t>> removableUnusableAtoms;
-
-    for(const auto& [r, c] : unusableAtoms)
-    {
-        if(r >= compZoneRowStart && r < compZoneRowEnd && c >= compZoneColStart && c < compZoneColEnd &&
-            labelledPathway(2 * r + borderRows, 2 * c + borderCols) == 1)
-        {
-            removableUnusableAtoms.push_back(std::tuple(r,c));
-        }
-    }
-    logger->debug("{} unusable atoms could be removed", removableUnusableAtoms.size());
     
     // Find straight pathways to the outside. Removed atoms will be extracted through here
     std::vector<std::tuple<size_t, bool, bool>> outsidePathwayVerticalAtLowIndex;
@@ -1567,196 +2600,337 @@ std::optional<std::tuple<ParallelMove,double>> removeAtomsInBorderPathway(
         }
     }
 
+    int pathwayRowCount = 2 * stateArray.rows() - 1;
+    int pathwayColCount = 2 * stateArray.cols() - 1;
+    Eigen::Array<std::optional<std::tuple<int,int,double,unsigned int>>, Eigen::Dynamic, Eigen::Dynamic> sitesPath = 
+        Eigen::Array<std::optional<std::tuple<int,int,double,unsigned int>>, Eigen::Dynamic, Eigen::Dynamic>::Constant(
+            pathwayRowCount, pathwayColCount, std::nullopt);
+
     // Insert starting points for inward search for atoms to be removed
     // Start just outside comp zone
-    std::vector<std::vector<std::vector<std::tuple<int,int>>>> reachableSitesAfterMove;
-    reachableSitesAfterMove.push_back(std::vector<std::vector<std::tuple<int,int>>>());
+    std::vector<std::vector<std::tuple<int,int>>> reachableSitesAfterMove;
+    reachableSitesAfterMove.push_back(std::vector<std::tuple<int,int>>());
     for(const auto& [index, vertical, atLowIndex] : outsidePathwayVerticalAtLowIndex)
     {
         if(vertical)
         {
             if(atLowIndex)
             {
-                reachableSitesAfterMove[0].push_back(std::vector<std::tuple<int,int>>({std::tuple(2 * compZoneRowStart - 1, index)}));
+                reachableSitesAfterMove[0].push_back(std::tuple(-1, index));
             }
             else
             {
-                reachableSitesAfterMove[0].push_back(std::vector<std::tuple<int,int>>({std::tuple(2 * compZoneRowEnd - 1, index)}));
+                reachableSitesAfterMove[0].push_back(std::tuple(pathwayRowCount, index));
             }
         }
         else
         {
             if(atLowIndex)
             {
-                reachableSitesAfterMove[0].push_back(std::vector<std::tuple<int,int>>({std::tuple(index, 2 * compZoneColStart - 1)}));
+                reachableSitesAfterMove[0].push_back(std::tuple(index, -1));
             }
             else
             {
-                reachableSitesAfterMove[0].push_back(std::vector<std::tuple<int,int>>({std::tuple(index, 2 * compZoneColEnd - 1)}));
+                reachableSitesAfterMove[0].push_back(std::tuple(index, pathwayColCount));
             }
         }
     }
 
-    std::set<std::tuple<size_t,size_t>> lookedAtSites;
+    logger->debug("Time for finding outside path and setup: {}us", (double)((std::chrono::steady_clock::now() - startTime).count()) / 1000.);
+    startTime = std::chrono::steady_clock::now();
+
     for(size_t moveDist = 0; !reachableSitesAfterMove[moveDist].empty(); moveDist++)
     {
-        reachableSitesAfterMove.push_back(std::vector<std::vector<std::tuple<int,int>>>());
-        std::vector<std::vector<std::tuple<int,int>>> currentlyMovableAtoms;
+        startTime = std::chrono::steady_clock::now();
+        reachableSitesAfterMove.push_back(std::vector<std::tuple<int,int>>());
+        std::vector<std::tuple<int,int>> currentlyMovableAtoms;
+        std::vector<std::tuple<int,int>> currentlyMovableNonTargetAtoms;
         logger->debug("{} sites reachable at dist {}", reachableSitesAfterMove[moveDist].size(), moveDist);
-        for(const auto& path : reachableSitesAfterMove[moveDist])
+        #pragma omp for schedule(static, 8)
+        for(const auto& [row,col] : reachableSitesAfterMove[moveDist])
         {
-            const auto& [row, col] = path.back();
-            for(int dir = 0; dir < 4; dir++)
+            bool nextMoveVertical;
+            double cost = 0;
+            if(moveDist == 0)
             {
-                int rowDir = dir % 2 == 0 ? dir - 1 : 0;
-                int colDir = dir % 2 == 1 ? dir - 2 : 0;
+                nextMoveVertical = row == -1 || row == pathwayRowCount;
+            }
+            else
+            {
+                auto lastLoc = sitesPath(row,col);
+                if(!lastLoc.has_value())
+                {
+                    logger->warn("Last site in pathway path not found");
+                    continue;
+                }
+                cost = std::get<2>(lastLoc.value());
+                nextMoveVertical = std::get<0>(lastLoc.value()) == row;
+            }
+            for(int dir : {-1,1})
+            {
+                int rowDir = nextMoveVertical ? dir : 0;
+                int colDir = nextMoveVertical ? 0 : dir;
                 bool hasCrossedAtom = false;
-                for(int dist = 1; true; dist++)
+                for(int dist = 1;; dist++)
                 {
                     int currRow = row + dist * rowDir;
                     int currCol = col + dist * colDir;
-                    if(currRow < 2 * (int)compZoneRowStart || currRow > 2 * ((int)compZoneRowEnd - 1) || 
-                        currCol < 2 * (int)compZoneColStart || currCol > 2 * ((int)compZoneColEnd - 1) || 
+                    if(currRow < 0 || currRow >= pathwayRowCount || 
+                        currCol < 0 || currCol >= pathwayColCount || 
                         pathway(borderRows + currRow, borderCols + currCol) > 0)
                     {
                         break;
                     }
                     else if(currRow % 2 == 0 && currCol % 2 == 0 && stateArray(currRow / 2, currCol / 2))
                     {
-                        std::vector<std::tuple<int,int>> newPath = path;
-                        newPath.push_back(std::tuple(currRow, currCol));
-                        currentlyMovableAtoms.push_back(newPath);
                         hasCrossedAtom = true;
-                    }
-                    else if(!hasCrossedAtom)
-                    {
-                        if(!lookedAtSites.contains(std::tuple(currRow,currCol)))
+                        double newCost = cost + costPerSubMove(dist * (nextMoveVertical ? ROW_SPACING : COL_SPACING));
+                        if(sitesPath(currRow, currCol).has_value())
                         {
-                            std::vector<std::tuple<int,int>> newPath = path;
-                            newPath.push_back(std::tuple(currRow,currCol));
-                            reachableSitesAfterMove[moveDist + 1].push_back(newPath);
-                            lookedAtSites.insert(std::tuple(currRow,currCol));
-                        }
-                    }
-                }
-            }
-        }
-
-        std::set<std::tuple<size_t,size_t>> atomsToBeMoved;
-        for(const auto& path : currentlyMovableAtoms)
-        {
-            atomsToBeMoved.insert(path.back());
-        }
-        if(atomsToBeMoved.size() > 0)
-        {
-            std::vector<std::vector<std::tuple<int,int>>> bestRemovalSet;
-            bool lastMoveVertical = (std::get<0>(currentlyMovableAtoms[0][0]) == 2 * (int)compZoneRowStart - 1) || 
-                (std::get<0>(currentlyMovableAtoms[0][0]) == 2 * (int)compZoneRowEnd - 1);
-            bool atLowEnd = (std::get<0>(currentlyMovableAtoms[0][0]) == 2 * (int)compZoneRowStart - 1) || 
-                (std::get<1>(currentlyMovableAtoms[0][0]) == 2 * (int)compZoneColStart - 1);
-
-            for(const auto& path : currentlyMovableAtoms)
-            {
-                bool allowed = true;
-                bool currentLastMoveVertical = (std::get<0>(path[0]) == 2 * (int)compZoneRowStart - 1) || 
-                    (std::get<0>(path[0]) == 2 * (int)compZoneRowEnd - 1);
-                if(currentLastMoveVertical == lastMoveVertical)
-                {
-                    for(const auto& otherPath : bestRemovalSet)
-                    {
-                        if(path.size() != otherPath.size())
-                        {
-                            allowed = false;
-                            break;
-                        }
-                        for(size_t pathIndex = 1; pathIndex < path.size(); pathIndex++)
-                        {
-                            const auto& [row,col] = path[pathIndex];
-                            const auto& [lastRow,lastCol] = path[pathIndex - 1];
-                            const auto& [otherRow,otherCol] = otherPath[pathIndex];
-                            const auto& [lastOtherRow,lastOtherCol] = otherPath[pathIndex - 1];
-
-                            if(row == otherRow && col == otherCol)
+                            if(newCost < std::get<2>(sitesPath(currRow, currCol).value()) && std::get<3>(sitesPath(currRow, currCol).value()) == moveDist)
                             {
-                                allowed = false;
-                                break;
+                                #pragma omp critical (sitesPath)
+                                sitesPath(currRow, currCol) = std::tuple(row, col, newCost, moveDist);
                             }
-
-                            if(lastMoveVertical)
+                        }
+                        else
+                        {
+                            #pragma omp critical (movable)
                             {
-                                if(col != otherCol || lastCol != lastOtherCol || ((lastRow < lastOtherRow) != (row < otherRow)))
-                                {
-                                    allowed = false;
-                                    break;
-                                }
+                            if(isInCompZone(currRow / 2, currCol / 2, compZoneRowStart, 
+                                compZoneRowEnd, compZoneColStart, compZoneColEnd))
+                            {
+                                currentlyMovableAtoms.push_back(std::tuple(currRow, currCol));
                             }
                             else
                             {
-                                if(row != otherRow || lastRow != lastOtherRow || ((lastCol < lastOtherCol) != (col < otherCol)))
-                                {
-                                    allowed = false;
-                                    break;
-                                }
+                                currentlyMovableNonTargetAtoms.push_back(std::tuple(currRow, currCol));
                             }
+                            }
+                            #pragma omp critical (sitesPath)
+                            sitesPath(currRow, currCol) = std::tuple(row, col, newCost, moveDist);
                         }
                     }
-                    if(allowed)
+                    else if(!hasCrossedAtom && currentlyMovableAtoms.empty())
                     {
-                        bestRemovalSet.insert(std::upper_bound(bestRemovalSet.begin(), bestRemovalSet.end(), path, 
-                            [](const auto& lhs, const auto& rhs){ return std::get<0>(lhs.back()) < std::get<0>(rhs.back()) || 
-                                std::get<1>(lhs.back()) < std::get<1>(rhs.back()); }), path);
+                        double newCost = cost + costPerSubMove(dist * (nextMoveVertical ? ROW_SPACING : COL_SPACING));
+                        if(sitesPath(currRow, currCol).has_value())
+                        {
+                            if(newCost < std::get<2>(sitesPath(currRow, currCol).value()) && std::get<3>(sitesPath(currRow, currCol).value()) == moveDist)
+                            {
+                                #pragma omp critical (sitesPath)
+                                sitesPath(currRow, currCol) = std::tuple(row, col, newCost, moveDist);
+                            }
+                        }
+                        else
+                        {
+                            #pragma omp critical (reachable)
+                            reachableSitesAfterMove[moveDist + 1].push_back(std::tuple(currRow, currCol));
+                            #pragma omp critical (sitesPath)
+                            sitesPath(currRow, currCol) = std::tuple(row, col, newCost, moveDist);
+                        }
                     }
                 }
             }
-            ParallelMove move;
-            for(size_t pathIndex = bestRemovalSet.begin()->size() - 1; pathIndex >= 1; pathIndex--)
+        }
+
+        logger->debug("Time for finding locations after submove {}: {}us", moveDist, (double)((std::chrono::steady_clock::now() - startTime).count()) / 1000.);
+        startTime = std::chrono::steady_clock::now();
+
+        logger->debug("{} removable atoms at move dist {}", currentlyMovableAtoms.size(), moveDist);
+        if(currentlyMovableAtoms.size() > 0)
+        {
+            std::vector<std::tuple<std::set<std::tuple<int,int>>, bool, double>> currentRemovalSets;
+            for(const auto& movableAtom : currentlyMovableAtoms)
             {
-                ParallelMove::Step step;
-                if(lastMoveVertical)
+                bool currentLastMoveVertical = false;
+                std::tuple<int,int> pathNode = movableAtom;
+                for(size_t i = 0; i <= moveDist; i++)
                 {
-                    step.colSelection.push_back((double)(std::get<1>(bestRemovalSet[0][pathIndex])) / 2.);
-                }
-                else
-                {
-                    step.rowSelection.push_back((double)(std::get<0>(bestRemovalSet[0][pathIndex])) / 2.);
-                }
-                for(const auto& path : bestRemovalSet)
-                {
-                    if(lastMoveVertical)
+                    auto nextNode = sitesPath(std::get<0>(pathNode), std::get<1>(pathNode));
+                    if(!nextNode.has_value())
                     {
-                        step.rowSelection.push_back((double)(std::get<0>(path[pathIndex])) / 2.);
+                        logger->warn("Pathway move could not be reconstructed (Node does not exist)");
+                        continue;
                     }
                     else
                     {
-                        step.colSelection.push_back((double)(std::get<1>(path[pathIndex])) / 2.);
+                        pathNode = std::tuple(std::get<0>(nextNode.value()), std::get<1>(nextNode.value()));
                     }
                 }
-                move.steps.push_back(std::move(step));
-            }
-            ParallelMove::Step end;
-            if(lastMoveVertical)
-            {
-                end.colSelection.push_back((double)(std::get<1>(bestRemovalSet[0][0])) / 2.);
-                int baseValue = atLowEnd ? (-move.steps.back().rowSelection.size()) : stateArray.rows();
-                for(int i = 0; i < (int)move.steps.back().rowSelection.size(); i++)
+                if(std::get<0>(pathNode) == -1 || std::get<0>(pathNode) == pathwayRowCount)
                 {
-                    end.rowSelection.push_back(baseValue + i);
+                    currentLastMoveVertical = true;
                 }
+                else if(std::get<1>(pathNode) == -1 || std::get<1>(pathNode) == pathwayColCount)
+                {
+                    currentLastMoveVertical = false;
+                }
+                else
+                {
+                    logger->warn("Pathway move could not be reconstructed (End not found in move limit)");
+                    continue;
+                }
+
+                if(currentRemovalSets.empty())
+                {
+                    currentRemovalSets.push_back(std::tuple(std::set({movableAtom}), currentLastMoveVertical, VALUE_CLEARED_UNDESIRED_UNUSABLE));
+                }
+                else
+                {
+                    bool inserted = false;
+                    for(auto& [removalSet, lastMoveVertical, removalSetBenefit] : currentRemovalSets)
+                    {
+                        if(lastMoveVertical == currentLastMoveVertical && 
+                            canAtomsBeMovedSimultaneously(sitesPath, removalSet, movableAtom, moveDist, lastMoveVertical, pathwayRowCount))
+                        {
+                            inserted = true;
+                            removalSet.insert(movableAtom);
+                            removalSetBenefit += VALUE_CLEARED_UNDESIRED_UNUSABLE;
+                        }
+                    }
+                    if(!inserted)
+                    {
+                        currentRemovalSets.push_back(std::tuple(std::set({movableAtom}), currentLastMoveVertical, VALUE_CLEARED_UNDESIRED_UNUSABLE));
+                    }
+                }
+            }
+
+            if(currentRemovalSets.empty())
+            {
+                logger->warn("No removal sets found even though there should have been removable atoms");
+                return std::nullopt;
             }
             else
             {
-                end.rowSelection.push_back((double)(std::get<0>(bestRemovalSet[0][0])) / 2.);
-                int baseValue = atLowEnd ? (-move.steps.back().colSelection.size()) : stateArray.cols();
-                for(int i = 0; i < (int)move.steps.back().colSelection.size(); i++)
+                for(const auto& moveableNonTargetAtom : currentlyMovableNonTargetAtoms)
                 {
-                    end.colSelection.push_back(baseValue + i);
+                    for(auto& [removalSet, lastMoveVertical, removalSetBenefit] : currentRemovalSets)
+                    {
+                        if(canAtomsBeMovedSimultaneously(sitesPath, removalSet, moveableNonTargetAtom, moveDist, lastMoveVertical, pathwayRowCount))
+                        {
+                            removalSet.insert(moveableNonTargetAtom);
+                            removalSetBenefit += VALUE_CLEARED_OUTSIDE_UNUSABLE;
+                        }
+                    }
+                }
+
+                auto removalSetWithBestBenefit = std::max_element(currentRemovalSets.begin(), currentRemovalSets.end(), [](const auto& lhs, const auto& rhs)
+                {
+                    return std::get<2>(lhs) < std::get<2>(rhs);
+                });
+                if(removalSetWithBestBenefit != currentRemovalSets.end())
+                {
+                    logger->debug("Time for finding best removal set: {}us", (double)((std::chrono::steady_clock::now() - startTime).count()) / 1000.);
+                    startTime = std::chrono::steady_clock::now();
+                    
+                    const auto& [bestRemovalSet, bestLastMoveVertical, bestMoveBenefit] = *removalSetWithBestBenefit;
+                    std::vector<std::tuple<int,int>> currentSites(bestRemovalSet.begin(), bestRemovalSet.end());
+                    std::vector<std::tuple<int,int>> nextStepSites;
+
+                    ParallelMove move;
+                    for(size_t pathIndex = 0; pathIndex <= moveDist; pathIndex++)
+                    {
+                        ParallelMove::Step step;
+                        if(bestLastMoveVertical)
+                        {
+                            step.colSelection.push_back((double)(std::get<1>(
+                                *currentSites.begin())) / 2.);
+                        }
+                        else
+                        {
+                            step.rowSelection.push_back((double)(std::get<0>(
+                                *currentSites.begin())) / 2.);
+                        }
+                        for(const auto& [row,col] : currentSites)
+                        {
+                            if(bestLastMoveVertical)
+                            {
+                                step.rowSelection.insert(std::upper_bound(step.rowSelection.begin(), 
+                                    step.rowSelection.end(), (double)(row) / 2.), (double)(row) / 2.);
+                            }
+                            else
+                            {
+                                step.colSelection.insert(std::upper_bound(step.colSelection.begin(), 
+                                    step.colSelection.end(), (double)(col) / 2.), (double)(col) / 2.);
+                            }
+                            const auto& nextSite = sitesPath(row, col);
+                            if(!nextSite.has_value())
+                            {
+                                logger->warn("Pathway move could not be reconstructed during move creation (Node does not exist)");
+                                return std::nullopt;
+                            }
+                            else
+                            {
+                                nextStepSites.push_back(std::tuple(std::get<0>(nextSite.value()), std::get<1>(nextSite.value())));
+                            }
+                        }
+                        currentSites = nextStepSites;
+                        nextStepSites.clear();
+                        move.steps.push_back(std::move(step));
+                    }
+                    ParallelMove::Step end;
+                    if(bestLastMoveVertical)
+                    {
+                        end.colSelection.push_back((double)(std::get<1>(*currentSites.begin())) / 2.);
+                        int lowEndCount = 0, highEndCount = 0;
+                        for(const auto& [row, col] : currentSites)
+                        {
+                            if(row == -1)
+                            {
+                                lowEndCount++;
+                            }
+                            else
+                            {
+                                highEndCount++;
+                            }
+                        }
+                        for(int i = 0; i < lowEndCount; i++)
+                        {
+                            end.rowSelection.push_back(-lowEndCount + i);
+                        }
+                        for(int i = 0; i < highEndCount; i++)
+                        {
+                            end.rowSelection.push_back(stateArray.rows() + i);
+                        }
+                    }
+                    else
+                    {
+                        end.rowSelection.push_back((double)(std::get<0>(*currentSites.begin())) / 2.);
+                        int lowEndCount = 0, highEndCount = 0;
+                        for(const auto& [row, col] : currentSites)
+                        {
+                            if(col == -1)
+                            {
+                                lowEndCount++;
+                            }
+                            else
+                            {
+                                highEndCount++;
+                            }
+                        }
+                        for(int i = 0; i < lowEndCount; i++)
+                        {
+                            end.colSelection.push_back(-lowEndCount + i);
+                        }
+                        for(int i = 0; i < highEndCount; i++)
+                        {
+                            end.colSelection.push_back(stateArray.cols() + i);
+                        }
+                    }
+                    move.steps.push_back(std::move(end));
+
+                    logger->debug("Time for constructing move: {}us", (double)((std::chrono::steady_clock::now() - startTime).count()) / 1000.);
+                    logger->info("Returning removal move that eliminates {} unusable atoms", 
+                        move.steps[0].rowSelection.size() * move.steps[0].colSelection.size());
+                    return std::tuple(move, bestMoveBenefit / move.cost());
+                }
+                else
+                {
+                    logger->warn("No best removal sets found even though there should have been removable atoms");
+                    return std::nullopt;    
                 }
             }
-            move.steps.push_back(std::move(end));
-            double moveBenefit = (double)(move.steps[0].rowSelection.size() * move.steps[0].colSelection.size()) / move.cost();
-            logger->info("Returning removal move that eliminates {} unusable atoms", 
-                move.steps[0].rowSelection.size() * move.steps[0].colSelection.size());
-            return std::tuple(move, moveBenefit);
         }
     }
 
@@ -1771,7 +2945,7 @@ bool updateDataStructuresAfterFindingMove(
     unsigned int& labelCount, size_t borderRows, size_t borderCols,
     const py::EigenDRef<const Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &stateArray, 
     const py::EigenDRef<const Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &targetGeometry, 
-    const ParallelMove &move, std::set<std::tuple<size_t,size_t>>& unusableAtoms, 
+    const ParallelMove &move, std::set<std::tuple<size_t,size_t>>& unusableAtoms, std::set<std::tuple<size_t,size_t>>& usableAtoms,
     std::set<std::tuple<size_t,size_t>>& usableTargetSites,
     size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd, 
     std::shared_ptr<spdlog::logger> logger)
@@ -1804,6 +2978,8 @@ bool updateDataStructuresAfterFindingMove(
                 int pathwayStartRow = 2 * startRow + borderRows;
                 int pathwayStartCol = 2 * startCol + borderCols;
 
+                usableAtoms.erase(std::tuple(startRow, startCol));
+
                 if(unusableAtoms.erase(std::tuple(startRow, startCol)))
                 {
                     if(newRow >= 0 && newRow < stateArray.rows() && newCol >= 0 && newCol < stateArray.cols())
@@ -1812,8 +2988,8 @@ bool updateDataStructuresAfterFindingMove(
                     }
                 }
 
-                if(newRow >= (int)compZoneRowStart && newRow < (int)compZoneRowEnd && 
-                    newCol >= (int)compZoneColStart && newCol < (int)compZoneColEnd)
+                if(newRow >= 0 && newRow < stateArray.rows() && 
+                    newCol >= 0 && newCol < stateArray.cols())
                 {
                     usableTargetSites.erase(std::tuple(newRow, newCol));
                     pathway(Eigen::seqN(2 * newRow + borderRows - halfOccRows, occMask.rows()), 
@@ -1850,7 +3026,7 @@ bool updateDataStructuresAfterFindingMove(
     return true;
 }
 
-std::tuple<std::set<std::tuple<size_t,size_t>>,std::set<std::tuple<size_t,size_t>>> findUnusableAtomsAndUsableTargetSites(
+std::tuple<std::set<std::tuple<size_t,size_t>>,std::set<std::tuple<size_t,size_t>>,std::set<std::tuple<size_t,size_t>>> analyzeCurrentStateArray(
     const py::EigenDRef<const Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &stateArray, 
     const py::EigenDRef<const Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &targetGeometry, 
     size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd, 
@@ -1862,7 +3038,9 @@ std::tuple<std::set<std::tuple<size_t,size_t>>,std::set<std::tuple<size_t,size_t
     usabilityPreventingNeighborhoodMask(usabilityPreventingNeighborhoodMaskRowDist, usabilityPreventingNeighborhoodMaskColDist) = false;
 
     std::set<std::tuple<size_t,size_t>> unusableAtoms;
+    std::set<std::tuple<size_t,size_t>> usableNonTargetAtoms;
     std::set<std::tuple<size_t,size_t>> usableTargetSites;
+
     bool changesWereMade = true;
     Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic> unusabilityArray(stateArray.rows(), stateArray.cols());
     unusabilityArray.fill(false);
@@ -1909,159 +3087,334 @@ std::tuple<std::set<std::tuple<size_t,size_t>>,std::set<std::tuple<size_t,size_t
     {
         for(int col = 0; col < stateArray.cols(); col++)
         {
-            if(stateArray(row,col) && unusabilityArray(row, col))
+            if(stateArray(row,col))
             {
-                unusableAtoms.insert(std::tuple(row,col));
-                strstream << "X";
-            }
-            else if(row >= (int)compZoneRowStart && row < (int)compZoneRowEnd && 
-                col >= (int)compZoneColStart && col < (int)compZoneColEnd && 
-                !stateArray(row,col) && targetGeometry(row - compZoneRowStart, col - compZoneColStart) && 
-                !unusabilityArray(row, col))
-            {
-                usableTargetSites.insert(std::tuple(row,col));
-                strstream << "A";
-            }
-            else if(stateArray(row,col))
-            {
-                strstream << "█";
+                if(unusabilityArray(row, col))
+                {
+                    unusableAtoms.insert(std::tuple(row,col));
+                    strstream << "X";
+                }
+                else
+                {
+                    if(row < (int)compZoneRowStart || row >= (int)compZoneRowEnd ||
+                        col < (int)compZoneColStart || col >= (int)compZoneColEnd ||
+                        !targetGeometry(row - compZoneRowStart, col - compZoneColStart))
+                    {
+                        usableNonTargetAtoms.insert(std::tuple(row,col));
+                    }
+                    strstream << "█";
+                }
             }
             else
             {
-                strstream << " ";
+                if(row >= (int)compZoneRowStart && row < (int)compZoneRowEnd && 
+                    col >= (int)compZoneColStart && col < (int)compZoneColEnd && 
+                    targetGeometry(row - compZoneRowStart, col - compZoneColStart) && 
+                    !unusabilityArray(row, col))
+                {
+                    usableTargetSites.insert(std::tuple(row,col));
+                    strstream << "A";
+                }
+                else
+                {
+                    strstream << " ";
+                }
             }
         }
         strstream << "\n";
     }
     logger->debug(strstream.str());
-    return std::tuple(unusableAtoms, usableTargetSites);
+    return std::tuple(unusableAtoms, usableNonTargetAtoms, usableTargetSites);
+}
+
+void designateUsableUndesiredAtomsAsUnusable(const py::EigenDRef<const Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &stateArray, 
+    const py::EigenDRef<const Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &targetGeometry, 
+    size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd, std::set<std::tuple<size_t,size_t>>& unusableAtoms,
+    std::shared_ptr<spdlog::logger> logger)
+{
+    auto undesiredAtoms = stateArray(Eigen::seq(compZoneRowStart, compZoneRowEnd - 1),Eigen::seq(compZoneColStart, compZoneColEnd - 1)) && !targetGeometry;
+    for(Eigen::Index row = 0; row < targetGeometry.rows(); row++)
+    {
+        for(Eigen::Index col = 0; col < targetGeometry.cols(); col++)
+        {
+            if(undesiredAtoms(row,col))
+            {
+                unusableAtoms.insert(std::tuple(row + compZoneRowStart, col + compZoneColStart));
+            }
+        }
+    }
+}
+
+std::vector<ParallelMove> removeAllDirectlyRemovableUnusableAtoms(
+    py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &stateArray, 
+    std::set<std::tuple<size_t,size_t>>& unusableAtoms, size_t borderRows, 
+    size_t borderCols, std::shared_ptr<spdlog::logger> logger)
+{
+    std::vector<ParallelMove> removalMoves;
+
+    Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> stateArrayCopy = stateArray;
+    for(const auto& [r, c] : unusableAtoms)
+    {
+        stateArrayCopy(r,c) = false;
+    }
+
+    auto pathway = generatePathway(borderRows, borderCols, stateArrayCopy, MIN_DIST_FROM_OCC_SITES, 0);
+
+    for(bool traverseRow : {true,false})
+    {
+        if((traverseRow && MIN_DIST_FROM_OCC_SITES <= COL_SPACING) || 
+            (!traverseRow && MIN_DIST_FROM_OCC_SITES <= ROW_SPACING))
+        {
+            for(bool lowToHigh : {true,false})
+            {
+                std::vector<int> minDist;
+                std::vector<int> maxDist;
+                size_t alongBorderMaxIndex = traverseRow ? stateArray.cols() : stateArray.rows();
+                RowBitMask indexDone(alongBorderMaxIndex);
+                size_t inwardMax = traverseRow ? stateArray.rows() : stateArray.cols();
+                size_t startIndex = lowToHigh ? 0 : (inwardMax - 1);
+                int dir = lowToHigh ? 1 : -1;
+                for(size_t alongBorder = 0; alongBorder < alongBorderMaxIndex; alongBorder++)
+                {
+                    int minDistV = -1;
+                    bool inBlock = false;
+                    for(int inwardDist = 0; inwardDist < (int)inwardMax; inwardDist++)
+                    {
+                        size_t r = traverseRow ? startIndex + inwardDist * dir : alongBorder;
+                        size_t c = traverseRow ? alongBorder : (startIndex + inwardDist * dir);
+                        if(unusableAtoms.contains(std::tuple(r,c)))
+                        {
+                            inBlock = true;
+                        }
+                        else if(inBlock)
+                        {
+                            inBlock = false;
+                            minDistV = inwardDist - 1;
+                        }
+                        if(!pathway(2 * r + borderRows, 2 * c + borderCols) == 0 || inwardDist == (int)(inwardMax - 1))
+                        {
+                            minDist.push_back(minDistV);
+                            maxDist.push_back(inwardDist - 1);
+                            indexDone.set(alongBorder, minDistV == -1);
+                            break;
+                        }
+                    }
+                }
+                logger->debug("Indices to move directly: {}/{}", alongBorderMaxIndex - indexDone.bitsSet(), alongBorderMaxIndex);
+
+                while(indexDone.bitsSet() < alongBorderMaxIndex)
+                {
+                    int maxMinDist = -1;
+                    for(size_t i = 0; i < minDist.size(); i++)
+                    {
+                        if(!indexDone[i] && minDist[i] > maxMinDist)
+                        {
+                            maxMinDist = minDist[i];
+                        }
+                    }
+                    std::vector<size_t> usedIndices;
+                    unsigned int selectedIndices = 0;
+                    unsigned int maxIndicesAlongBorder = traverseRow ? AOD_COL_LIMIT : AOD_ROW_LIMIT;
+                    if(AOD_TOTAL_LIMIT < maxIndicesAlongBorder)
+                    {
+                        maxIndicesAlongBorder = AOD_TOTAL_LIMIT;
+                    }
+                    for(size_t alongBorder = 0; alongBorder < alongBorderMaxIndex && selectedIndices < maxIndicesAlongBorder; alongBorder++)
+                    {
+                        if(!indexDone[alongBorder] && maxDist[alongBorder] >= maxMinDist)
+                        {
+                            usedIndices.push_back(alongBorder);
+                            indexDone.set(alongBorder, true);
+                            selectedIndices++;
+                        }
+                    }
+                    unsigned int maxIndicesInward = traverseRow ? AOD_ROW_LIMIT : AOD_COL_LIMIT;
+                    if(maxIndicesInward * selectedIndices > AOD_TOTAL_LIMIT)
+                    {
+                        maxIndicesInward = AOD_TOTAL_LIMIT / selectedIndices;
+                    }
+                    std::vector<int> inwardIndicesRequired;
+                    for(int inwardDist = 0; inwardDist <= maxMinDist; inwardDist++)
+                    {
+                        bool stepRequired = false;
+                        for(const auto& alongBorder : usedIndices)
+                        {
+                            if(unusableAtoms.erase(traverseRow ? 
+                                std::tuple(startIndex + inwardDist * dir,alongBorder) : 
+                                std::tuple(alongBorder, startIndex + inwardDist * dir)))
+                            {
+                                stepRequired = true;
+                            }
+                        }
+                        if(stepRequired)
+                        {
+                            inwardIndicesRequired.push_back(startIndex + inwardDist * dir);
+                        }
+                    }
+
+                    auto first = inwardIndicesRequired.begin();
+                    unsigned int moveCount = (unsigned int)ceil((double)inwardIndicesRequired.size() / (double)maxIndicesInward);
+                    for(unsigned int moveIndex = 0; moveIndex < moveCount; moveIndex++)
+                    {
+                        ParallelMove move;
+                        ParallelMove::Step start;
+                        std::vector<double> *alongBorderSelection;
+                        std::vector<double> *inwardSelection;
+                        if(traverseRow)
+                        {
+                            alongBorderSelection = &start.colSelection;
+                            inwardSelection = &start.rowSelection;
+                        }
+                        else
+                        {
+                            alongBorderSelection = &start.rowSelection;
+                            inwardSelection = &start.colSelection;
+                        }
+                        auto last = ((moveIndex + 1) * maxIndicesInward >= inwardIndicesRequired.size()) ? inwardIndicesRequired.end() : std::next(first, maxIndicesInward);
+                        inwardSelection->insert(inwardSelection->end(), first, last);
+                        if(!lowToHigh)
+                        {
+                            std::reverse(inwardSelection->begin(), inwardSelection->end());
+                        }
+                        alongBorderSelection->insert(alongBorderSelection->end(), usedIndices.begin(), usedIndices.end());
+                        move.steps.push_back(std::move(start));
+
+                        ParallelMove::Step end;
+                        if(traverseRow)
+                        {
+                            alongBorderSelection = &end.colSelection;
+                            inwardSelection = &end.rowSelection;
+                        }
+                        else
+                        {
+                            alongBorderSelection = &end.rowSelection;
+                            inwardSelection = &end.colSelection;
+                        }
+                        int count = ((moveIndex + 1) * maxIndicesInward > inwardIndicesRequired.size()) ? inwardIndicesRequired.size() - moveIndex * maxIndicesInward : maxIndicesInward;
+                        logger->debug("Moving {}/{} atoms", count, inwardIndicesRequired.size());
+                        for(int i = 0; i < count; i++)
+                        {
+                            inwardSelection->push_back((int)startIndex - dir * (lowToHigh ? (count - i) : (i + 1)));
+                        }
+                        alongBorderSelection->insert(alongBorderSelection->end(), usedIndices.begin(), usedIndices.end());
+                        move.steps.push_back(std::move(end));
+
+                        removalMoves.push_back(std::move(move));
+
+                        if(moveIndex < moveCount - 1)
+                        {
+                            first = std::next(first, maxIndicesInward);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return removalMoves;
 }
 
 bool findAndExecuteMoves(Eigen::Ref<Eigen::Array<unsigned int,Eigen::Dynamic,Eigen::Dynamic>> pathway, 
     Eigen::Ref<Eigen::Array<unsigned int,Eigen::Dynamic,Eigen::Dynamic>> labelledPathway, unsigned int labelCount,
     Eigen::Ref<Eigen::Array<unsigned int,Eigen::Dynamic,Eigen::Dynamic>> penalizedPathway,
-    std::set<std::tuple<size_t,size_t>>& unusableAtoms, std::set<std::tuple<size_t,size_t>>& usableTargetSites, 
+    std::set<std::tuple<size_t,size_t>>& unusableAtoms, std::set<std::tuple<size_t,size_t>>& usableAtoms, std::set<std::tuple<size_t,size_t>>& usableTargetSites, 
     size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd,
     size_t borderRows, size_t borderCols, std::vector<ParallelMove>& moveList, 
     py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &stateArray,
     const py::EigenDRef<const Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &targetGeometry, std::shared_ptr<spdlog::logger> logger)
 {
-    while(true)
+    bool alsoRemoveUsableAtoms = false;
+    unsigned int movesSinceLastDirectRemoval = 1;
+    std::chrono::duration<double, std::milli> distOneMoveTime = std::chrono::duration<double, std::milli>::zero(), 
+        removalMoveTime = std::chrono::duration<double, std::milli>::zero(), 
+        pathwayMoveTime = std::chrono::duration<double, std::milli>::zero(), 
+        complexMoveTime = std::chrono::duration<double, std::milli>::zero(), 
+        executeMoveTime = std::chrono::duration<double, std::milli>::zero(),
+        linearMoveTime = std::chrono::duration<double, std::milli>::zero();
+    while((stateArray(Eigen::seq(compZoneRowStart, compZoneRowEnd - 1),Eigen::seq(compZoneColStart, compZoneColEnd - 1)) != targetGeometry).any())
     {
-        auto targetSitesNeighboringPathways = findTargetSitesPerPathway(penalizedPathway,
-            labelledPathway, usableTargetSites, borderRows, borderCols, labelCount, 
-            compZoneRowStart, compZoneRowEnd, compZoneColStart, compZoneColEnd,
-            stateArray(Eigen::seq(compZoneRowStart, compZoneRowEnd - 1),Eigen::seq(compZoneColStart, compZoneColEnd - 1)), 
-            targetGeometry, logger);
-
-        std::vector<std::tuple<size_t,size_t>> possibleMoves;
-
-        auto occMask = generateMask(MIN_DIST_FROM_OCC_SITES, 0.5);
-        Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic> localAccessibility(occMask.rows() + 2, occMask.cols() + 2);
-
-        for(size_t r = 0; r < (size_t)targetGeometry.rows(); r++)
+        if(CHECK_FOR_DIRECT_REMOVAL_EVERY_X_MOVES > 0 && 
+            movesSinceLastDirectRemoval >= CHECK_FOR_DIRECT_REMOVAL_EVERY_X_MOVES)
         {
-            Eigen::Index pathwayRowIndex = 2 * (r + compZoneRowStart) + borderRows;
-            for(size_t c = 0; c < (size_t)targetGeometry.cols(); c++)
+            movesSinceLastDirectRemoval = 1;
+            auto removalMoves = removeAllDirectlyRemovableUnusableAtoms(stateArray, unusableAtoms,
+                borderRows, borderCols, logger);
+            for(const auto& move : removalMoves)
             {
-                if(!targetGeometry(r,c) && stateArray(r + compZoneRowStart, c + compZoneColStart) && 
-                    !unusableAtoms.contains(std::tuple(r + compZoneRowStart, c + compZoneColStart)))
+                if(!updateDataStructuresAfterFindingMove(penalizedPathway, pathway, labelledPathway, labelCount, borderRows, borderCols,
+                    stateArray, targetGeometry, move, unusableAtoms, usableAtoms, usableTargetSites, 
+                    compZoneRowStart, compZoneRowEnd, compZoneColStart, compZoneColEnd, logger))
                 {
-                    Eigen::Index pathwayColIndex = 2 * (c + compZoneRowStart) + borderCols;
-                    std::set<size_t> accessibleTargetSites;
-                    bool changesWereMade = true;
-                    localAccessibility.fill(false);
-                    localAccessibility(localAccessibility.rows() / 2, localAccessibility.cols() / 2) = true;
-                    while(changesWereMade)
-                    {
-                        changesWereMade = false;
-                        for(Eigen::Index lRow = 0; lRow < localAccessibility.rows(); lRow++)
-                        {
-                            for(Eigen::Index lCol = 0; lCol < localAccessibility.cols(); lCol++)
-                            {
-                                if(localAccessibility(lRow, lCol))
-                                {
-                                    if((localAccessibility.rows() / 2 - lRow) % 2 == 0 && (localAccessibility.cols() / 2 - lCol) % 2 == 0 && 
-                                        usableTargetSites.contains(std::tuple(r + compZoneRowStart - (localAccessibility.rows() / 2 - lRow) / 2,
-                                            c + compZoneColStart - (localAccessibility.cols() / 2 - lCol) / 2)))
-                                    {
-                                        accessibleTargetSites.insert((r - (localAccessibility.rows() / 2 - lRow) / 2) * 
-                                            targetGeometry.cols() + c - (localAccessibility.cols() / 2 - lCol) / 2);
-                                    }
-                                    if(labelledPathway(pathwayRowIndex - localAccessibility.rows() / 2 + lRow,
-                                        pathwayColIndex - localAccessibility.cols() / 2 + lCol) != 0)
-                                    {
-                                        for(const auto& targetSite : targetSitesNeighboringPathways[
-                                            labelledPathway(pathwayRowIndex - localAccessibility.rows() / 2 + lRow,
-                                                pathwayColIndex - localAccessibility.cols() / 2 + lCol) - 1])
-                                        {
-                                            accessibleTargetSites.insert(targetSite);
-                                        }
-                                    }
-                                }
-                                else
-                                {
-                                    bool withinOwnAtomsProhibitedArea = lRow > 0 && lRow < localAccessibility.rows() - 1 && 
-                                        lCol > 0 && lCol < localAccessibility.cols() - 1 && occMask(lRow - 1, lCol - 1);
-                                    bool notInOtherPathway = penalizedPathway(pathwayRowIndex - localAccessibility.rows() / 2 + lRow,
-                                        pathwayColIndex - localAccessibility.cols() / 2 + lCol) <= (withinOwnAtomsProhibitedArea ? 1 : 0);
-                                    bool adjacentToAccessibleLoc = 
-                                        (lRow > 0 && localAccessibility(lRow - 1, lCol)) || 
-                                        (lRow < localAccessibility.rows() - 1 && localAccessibility(lRow + 1, lCol)) || 
-                                        (lCol > 0 && localAccessibility(lRow, lCol - 1)) || 
-                                        (lCol < localAccessibility.cols() - 1 && localAccessibility(lRow, lCol + 1));
-                                    if(notInOtherPathway && adjacentToAccessibleLoc)
-                                    {
-                                        localAccessibility(lRow, lCol) = true;
-                                        changesWereMade = true;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    for(const auto& targetSite : accessibleTargetSites)
-                    {
-                        possibleMoves.push_back(std::tuple(r * targetGeometry.cols() + c, targetSite));
-                    }
+                    return false;
                 }
+                EigenArrayStateArrayAccessor genericAccessor(stateArray);
+                if(!move.execute(genericAccessor, logger))
+                {
+                    return false;
+                }
+                moveList.push_back(move);
             }
         }
+        else
+        {
+            movesSinceLastDirectRemoval++;
+        }
+
+        logger->debug("Usable atoms: {}, usable target sites: {}" , usableAtoms.size(), usableTargetSites.size());
 
         std::optional<ParallelMove> bestMove = std::nullopt;
         double bestIntPerCost = -1;
 
-        auto distOneMove = findDistOneMove(penalizedPathway, stateArray, targetGeometry, possibleMoves, unusableAtoms, compZoneRowStart, 
+        auto startTime = std::chrono::steady_clock::now();
+        auto distOneMove = findDistOneMove(penalizedPathway, stateArray, targetGeometry, unusableAtoms, compZoneRowStart, 
             compZoneRowEnd, compZoneColStart, compZoneColEnd, borderRows, borderCols, logger);
         if(distOneMove.has_value())
         {
             std::tie(bestMove, bestIntPerCost) = distOneMove.value();
         }
+        distOneMoveTime += std::chrono::steady_clock::now() - startTime;
 
+        startTime = std::chrono::steady_clock::now();
         auto removalMove = removeAtomsInBorderPathway(stateArray, unusableAtoms, compZoneRowStart, compZoneRowEnd, 
             compZoneColStart, compZoneColEnd, borderRows, borderCols, moveList, logger);
         if(removalMove.has_value() && (!bestMove.has_value() || std::get<1>(removalMove.value()) > bestIntPerCost))
         {
             std::tie(bestMove, bestIntPerCost) = removalMove.value();
         }
+        removalMoveTime += std::chrono::steady_clock::now() - startTime;
 
-        auto pathwayMove = findPathwayMove(penalizedPathway, pathway, labelledPathway, stateArray, targetGeometry, unusableAtoms, usableTargetSites,
-            possibleMoves, compZoneRowStart, compZoneRowEnd, compZoneColStart, compZoneColEnd, borderRows, borderCols, bestIntPerCost, logger);
+        startTime = std::chrono::steady_clock::now();
+        auto pathwayMove = findPathwayMove(penalizedPathway, pathway, labelledPathway, stateArray, targetGeometry, unusableAtoms, usableAtoms, usableTargetSites,
+            compZoneRowStart, compZoneRowEnd, compZoneColStart, compZoneColEnd, borderRows, borderCols, bestIntPerCost, logger);
         if(pathwayMove.has_value() && (!bestMove.has_value() || std::get<1>(pathwayMove.value()) > bestIntPerCost))
         {
             std::tie(bestMove, bestIntPerCost) = pathwayMove.value();
         }
+        pathwayMoveTime += std::chrono::steady_clock::now() - startTime;
 
-        auto complexMove = findComplexMove(penalizedPathway, labelledPathway, stateArray, targetGeometry, unusableAtoms, 
-            possibleMoves, compZoneRowStart, compZoneRowEnd, compZoneColStart, compZoneColEnd, borderRows, borderCols, bestIntPerCost, logger);
+        /*startTime = std::chrono::steady_clock::now();
+        auto linearMove = findLinearMove(penalizedPathway, pathway, labelledPathway, stateArray, targetGeometry,
+            unusableAtoms, usableAtoms, usableTargetSites, compZoneRowStart, compZoneRowEnd,
+            compZoneColStart, compZoneColEnd, borderRows, borderCols, bestIntPerCost, logger);
+        if(linearMove.has_value() && (!bestMove.has_value() || std::get<1>(linearMove.value()) > bestIntPerCost))
+        {
+            std::tie(bestMove, bestIntPerCost) = linearMove.value();
+        }
+        linearMoveTime += std::chrono::steady_clock::now() - startTime;*/
+
+        /*startTime = std::chrono::steady_clock::now();
+        auto complexMove = findComplexMove(penalizedPathway, labelledPathway, labelCount, stateArray, targetGeometry, unusableAtoms, usableTargetSites,
+            compZoneRowStart, compZoneRowEnd, compZoneColStart, compZoneColEnd, borderRows, borderCols, bestIntPerCost, logger);
         if(complexMove.has_value() && (!bestMove.has_value() || std::get<1>(complexMove.value()) > bestIntPerCost))
         {
             std::tie(bestMove, bestIntPerCost) = complexMove.value();
         }
+        complexMoveTime += std::chrono::steady_clock::now() - startTime;*/
 
+        startTime = std::chrono::steady_clock::now();
         if(bestMove.has_value())
         {
             if(!updateDataStructuresAfterFindingMove(penalizedPathway, pathway, labelledPathway, labelCount, borderRows, borderCols,
-                stateArray, targetGeometry, bestMove.value(), unusableAtoms, usableTargetSites, 
+                stateArray, targetGeometry, bestMove.value(), unusableAtoms, usableAtoms, usableTargetSites, 
                 compZoneRowStart, compZoneRowEnd, compZoneColStart, compZoneColEnd, logger))
             {
                 return false;
@@ -2075,10 +3428,27 @@ bool findAndExecuteMoves(Eigen::Ref<Eigen::Array<unsigned int,Eigen::Dynamic,Eig
         }
         else
         {
-            break;
+            if(!alsoRemoveUsableAtoms)
+            {
+                alsoRemoveUsableAtoms = true;
+                designateUsableUndesiredAtomsAsUnusable(stateArray, targetGeometry, compZoneRowStart, 
+                    compZoneRowEnd, compZoneColStart, compZoneColEnd, unusableAtoms, logger);
+            }
+            else
+            {
+                logger->error("No more moves could be found!");
+                return false;
+            }
         }
+        executeMoveTime += std::chrono::steady_clock::now() - startTime;
     }
 
+    logger->debug("Time spent on distOne move: {}ms", distOneMoveTime.count());
+    logger->debug("Time spent on removal move: {}ms", removalMoveTime.count());
+    logger->debug("Time spent on pathway move: {}ms", pathwayMoveTime.count());
+    logger->debug("Time spent on complex move: {}ms", complexMoveTime.count());
+    logger->debug("Time spent on linear move: {}ms", linearMoveTime.count());
+    logger->debug("Time spent on move execution: {}ms", executeMoveTime.count());
     return true;
 }
 
@@ -2208,174 +3578,8 @@ bool checkTargetGeometryFeasibility(py::EigenDRef<Eigen::Array<bool, Eigen::Dyna
     return true;
 }
 
-bool removeAllDirectlyRemovableUnusableAtoms(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &stateArray, 
-    std::set<std::tuple<size_t,size_t>>& unusableAtoms, size_t borderRows, size_t borderCols, 
-    std::vector<ParallelMove>& moveList, std::shared_ptr<spdlog::logger> logger)
-{
-    Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> stateArrayCopy = stateArray;
-    for(const auto& [r, c] : unusableAtoms)
-    {
-        stateArrayCopy(r,c) = false;
-    }
-
-    auto pathway = generatePathway(borderRows, borderCols, stateArrayCopy, MIN_DIST_FROM_OCC_SITES, 0);
-
-    for(bool traverseRow : {true,false})
-    {
-        if((traverseRow && MIN_DIST_FROM_OCC_SITES <= COL_SPACING) || 
-            (!traverseRow && MIN_DIST_FROM_OCC_SITES <= ROW_SPACING))
-        {
-            for(bool lowToHigh : {true,false})
-            {
-                std::vector<int> minDist;
-                std::vector<int> maxDist;
-                size_t alongBorderMaxIndex = traverseRow ? stateArray.cols() : stateArray.rows();
-                RowBitMask indexDone(alongBorderMaxIndex);
-                size_t inwardMax = traverseRow ? stateArray.rows() : stateArray.cols();
-                size_t startIndex = lowToHigh ? 0 : (inwardMax - 1);
-                int dir = lowToHigh ? 1 : -1;
-                for(size_t alongBorder = 0; alongBorder < alongBorderMaxIndex; alongBorder++)
-                {
-                    int minDistV = -1;
-                    bool inBlock = false;
-                    for(int inwardDist = 0; inwardDist < (int)inwardMax; inwardDist++)
-                    {
-                        size_t r = traverseRow ? startIndex + inwardDist * dir : alongBorder;
-                        size_t c = traverseRow ? alongBorder : (startIndex + inwardDist * dir);
-                        if(unusableAtoms.contains(std::tuple(r,c)))
-                        {
-                            inBlock = true;
-                        }
-                        else if(inBlock)
-                        {
-                            inBlock = false;
-                            minDistV = inwardDist - 1;
-                        }
-                        if(!pathway(2 * r + borderRows, 2 * c + borderCols) == 0 || inwardDist == (int)(inwardMax - 1))
-                        {
-                            minDist.push_back(minDistV);
-                            maxDist.push_back(inwardDist - 1);
-                            indexDone.set(alongBorder, minDistV == -1);
-                            break;
-                        }
-                    }
-                }
-                logger->debug("Indices to move directly: {}/{}", alongBorderMaxIndex - indexDone.bitsSet(), alongBorderMaxIndex);
-
-                while(indexDone.bitsSet() < alongBorderMaxIndex)
-                {
-                    int maxMinDist = -1;
-                    for(size_t i = 0; i < minDist.size(); i++)
-                    {
-                        if(!indexDone[i] && minDist[i] > maxMinDist)
-                        {
-                            maxMinDist = minDist[i];
-                        }
-                    }
-                    std::vector<size_t> usedIndices;
-                    unsigned int selectedIndices = 0;
-                    unsigned int maxIndicesAlongBorder = traverseRow ? AOD_COL_LIMIT : AOD_ROW_LIMIT;
-                    if(AOD_TOTAL_LIMIT < maxIndicesAlongBorder)
-                    {
-                        maxIndicesAlongBorder = AOD_TOTAL_LIMIT;
-                    }
-                    for(size_t alongBorder = 0; alongBorder < alongBorderMaxIndex && selectedIndices < maxIndicesAlongBorder; alongBorder++)
-                    {
-                        if(!indexDone[alongBorder] && maxDist[alongBorder] >= maxMinDist)
-                        {
-                            usedIndices.push_back(alongBorder);
-                            indexDone.set(alongBorder, true);
-                            selectedIndices++;
-                        }
-                    }
-                    unsigned int maxIndicesInward = traverseRow ? AOD_ROW_LIMIT : AOD_COL_LIMIT;
-                    if(maxIndicesInward * selectedIndices > AOD_TOTAL_LIMIT)
-                    {
-                        maxIndicesInward = AOD_TOTAL_LIMIT / selectedIndices;
-                    }
-                    std::vector<int> inwardIndicesRequired;
-                    for(int inwardDist = 0; inwardDist <= maxMinDist; inwardDist++)
-                    {
-                        bool stepRequired = false;
-                        for(const auto& alongBorder : usedIndices)
-                        {
-                            if(unusableAtoms.erase(traverseRow ? std::tuple(startIndex + inwardDist * dir,alongBorder) : 
-                                std::tuple(alongBorder, startIndex + inwardDist * dir)))
-                            {
-                                stepRequired = true;
-                            }
-                        }
-                        if(stepRequired)
-                        {
-                            inwardIndicesRequired.push_back(startIndex + inwardDist * dir);
-                        }
-                    }
-
-                    auto first = inwardIndicesRequired.begin();
-                    unsigned int moveCount = (unsigned int)ceil((double)inwardIndicesRequired.size() / (double)maxIndicesInward);
-                    for(unsigned int moveIndex = 0; moveIndex < moveCount; moveIndex++)
-                    {
-                        ParallelMove move;
-                        ParallelMove::Step start;
-                        std::vector<double> *alongBorderSelection;
-                        std::vector<double> *inwardSelection;
-                        if(traverseRow)
-                        {
-                            alongBorderSelection = &start.colSelection;
-                            inwardSelection = &start.rowSelection;
-                        }
-                        else
-                        {
-                            alongBorderSelection = &start.rowSelection;
-                            inwardSelection = &start.colSelection;
-                        }
-                        auto last = ((moveIndex + 1) * maxIndicesInward >= inwardIndicesRequired.size()) ? inwardIndicesRequired.end() : std::next(first, maxIndicesInward);
-                        inwardSelection->insert(inwardSelection->end(), first, last);
-                        if(!lowToHigh)
-                        {
-                            std::reverse(inwardSelection->begin(), inwardSelection->end());
-                        }
-                        alongBorderSelection->insert(alongBorderSelection->end(), usedIndices.begin(), usedIndices.end());
-                        move.steps.push_back(std::move(start));
-
-                        ParallelMove::Step end;
-                        if(traverseRow)
-                        {
-                            alongBorderSelection = &end.colSelection;
-                            inwardSelection = &end.rowSelection;
-                        }
-                        else
-                        {
-                            alongBorderSelection = &end.rowSelection;
-                            inwardSelection = &end.colSelection;
-                        }
-                        int count = ((moveIndex + 1) * maxIndicesInward > inwardIndicesRequired.size()) ? inwardIndicesRequired.size() - moveIndex * maxIndicesInward : maxIndicesInward;
-                        logger->debug("Moving {}/{} atoms", count, inwardIndicesRequired.size());
-                        for(int i = 0; i < count; i++)
-                        {
-                            inwardSelection->push_back((int)startIndex - dir * (lowToHigh ? (count - i) : (i + 1)));
-                        }
-                        alongBorderSelection->insert(alongBorderSelection->end(), usedIndices.begin(), usedIndices.end());
-                        move.steps.push_back(std::move(end));
-
-                        EigenArrayStateArrayAccessor genericAccessor(stateArray);
-                        move.execute(genericAccessor, logger);
-                        moveList.push_back(std::move(move));
-
-                        if(moveIndex < moveCount - 1)
-                        {
-                            first = std::next(first, maxIndicesInward);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    return true;
-}
-
-ParallelMove createRemovalMove(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &stateArray, bool verticalMove, 
-    std::vector<double> unchangingIndices, std::vector<double> movedIndices, bool moveTowardsLowIndices)
+ParallelMove createRemovalMove(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &stateArray, 
+    bool verticalMove, std::vector<double> unchangingIndices, std::vector<double> movedIndices, bool moveTowardsLowIndices)
 {
     ParallelMove move;
     ParallelMove::Step start;
@@ -2421,7 +3625,8 @@ ParallelMove createRemovalMove(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, 
 }
 
 bool createMinimallyInvasiveAccessPathway(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &stateArray,
-    std::set<std::tuple<size_t,size_t>>& unusableAtoms, size_t borderRows, size_t borderCols, 
+    std::set<std::tuple<size_t,size_t>>& unusableAtoms, std::set<std::tuple<size_t,size_t>>& usableAtoms, 
+    size_t borderRows, size_t borderCols, 
     size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd,
     std::vector<ParallelMove>& moveList, unsigned int count, std::shared_ptr<spdlog::logger> logger)
 {
@@ -2686,7 +3891,12 @@ bool createMinimallyInvasiveAccessPathway(py::EigenDRef<Eigen::Array<bool, Eigen
                     if(stateArray((pathwayVertical ? inwardIndex : usedIndexSt), (pathwayVertical ? usedIndexSt : inwardIndex)))
                     {
                         indexRequired = true;
-                        break;
+                        auto location = pathwayVertical ? std::tuple(inwardIndex, usedIndexSt) : 
+                            std::tuple(usedIndexSt, inwardIndex);
+                        unusableAtoms.erase(location);
+                        usableAtoms.erase(location);
+                        logger->debug("Removing {}/{} from usable and unusable atom list", 
+                            std::get<0>(location), std::get<1>(location));
                     }
                 }
                 if(indexRequired)
@@ -2750,15 +3960,21 @@ bool sortArray(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, 
     }
     logger->info(pathwayStream.str());
 
-    auto [unusableAtoms, usableTargetSites] = findUnusableAtomsAndUsableTargetSites(stateArray, 
+    auto [unusableAtoms, usableAtoms, usableTargetSites] = analyzeCurrentStateArray(stateArray, 
         targetGeometry, compZoneRowStart, compZoneRowEnd, compZoneColStart, compZoneColEnd, logger);
 
-    if(!removeAllDirectlyRemovableUnusableAtoms(stateArray, unusableAtoms,
-        borderRows, borderCols, moveList, logger))
+    auto removalMoves = removeAllDirectlyRemovableUnusableAtoms(stateArray, unusableAtoms,
+        borderRows, borderCols, logger);
+    for(const auto& move : removalMoves)
     {
-        return false;
+        EigenArrayStateArrayAccessor genericAccessor(stateArray);
+        if(!move.execute(genericAccessor, logger))
+        {
+            return false;
+        }
+        moveList.push_back(move);
     }
-    if(!createMinimallyInvasiveAccessPathway(stateArray, unusableAtoms, borderRows, borderCols, 
+    if(!createMinimallyInvasiveAccessPathway(stateArray, unusableAtoms, usableAtoms, borderRows, borderCols, 
         compZoneRowStart, compZoneRowEnd, compZoneColStart, compZoneColEnd, moveList, 10, logger))
     {
         return false;
@@ -2781,7 +3997,7 @@ bool sortArray(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, 
     pathway = generatePathway(borderRows, borderCols, stateArray);
     std::tie(labelledPathway, labelCount) = labelPathway(pathway);
 
-    if(!findAndExecuteMoves(pathway, labelledPathway, labelCount, penalizedPathway, unusableAtoms, usableTargetSites, compZoneRowStart, 
+    if(!findAndExecuteMoves(pathway, labelledPathway, labelCount, penalizedPathway, unusableAtoms, usableAtoms, usableTargetSites, compZoneRowStart, 
         compZoneRowEnd, compZoneColStart, compZoneColEnd, borderRows, borderCols, moveList,
         stateArray, targetGeometry, logger))
     {
@@ -2796,6 +4012,11 @@ bool sortArray(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, 
     }
     strstream << "Remaining unusable atoms: \n";
     for(const auto& [row,col] : unusableAtoms)
+    {
+        strstream << row << "/" << col << "\n";
+    }
+    strstream << "Remaining usable atoms: \n";
+    for(const auto& [row,col] : usableAtoms)
     {
         strstream << row << "/" << col << "\n";
     }
@@ -2927,6 +4148,8 @@ std::optional<std::vector<ParallelMove>> sortLatticeGeometriesParallel(
         logger->error("Comp zone does not have same number of cols as target geometry, aborting");
         return std::nullopt;
     }
+
+    omp_set_num_threads(NUM_THREADS);
 
     std::stringstream strstream;
     strstream << "Initial state: \n";

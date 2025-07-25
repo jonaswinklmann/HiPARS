@@ -7,7 +7,7 @@
 #define MOVE_COST_OFFSET 150
 #define MOVE_COST_OFFSET_SUBMOVE 0
 #define MOVE_COST_SCALING_SQRT 0
-#define MOVE_COST_SCALING_LINEAR 0
+#define MOVE_COST_SCALING_LINEAR 0.1
 
 #define MAX_MULTI_ITER_COUNT 100
 
@@ -25,6 +25,8 @@
 
 #define ALLOW_DIAGONAL_MOVEMENT false
 
+#define NUM_THREADS 8
+
 class ParallelMove
 {
 public:
@@ -40,7 +42,7 @@ public:
         ParallelMove::Step start, ParallelMove::Step end, std::shared_ptr<spdlog::logger> logger);
     double cost();
     bool execute(StateArrayAccessor& stateArray, std::shared_ptr<spdlog::logger> logger,
-        std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>> alreadyMoved = std::nullopt);
+        std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>> alreadyMoved = std::nullopt) const;
 };
 
 double inline costPerSubMove(double dist)
@@ -53,6 +55,11 @@ std::optional<std::vector<ParallelMove>> sortParallel(
     size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd);
 
 std::optional<std::vector<ParallelMove>> sortLatticeGeometriesParallel(
+    py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>& stateArray, 
+    size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd, 
+    py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>& targetGeometry);
+
+std::optional<std::vector<ParallelMove>> sortLatticeByRowParallel(
     py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>& stateArray, 
     size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd, 
     py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>& targetGeometry);

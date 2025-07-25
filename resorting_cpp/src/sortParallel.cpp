@@ -315,7 +315,7 @@ double ParallelMove::cost()
 }
 
 bool ParallelMove::execute(StateArrayAccessor& stateArray, std::shared_ptr<spdlog::logger> logger,
-    std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>> alreadyMoved)
+    std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>> alreadyMoved) const
 {
     const auto& firstStep = this->steps.front();
     const auto& lastStep = this->steps.back();

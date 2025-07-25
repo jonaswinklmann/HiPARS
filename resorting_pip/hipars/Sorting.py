@@ -99,6 +99,34 @@ class Sorting:
         if not target_geometry.dtype == bool:
             raise TypeError("state_array must be dtype bool")
         return resorting_cpp.sortLatticeGeometriesParallel(state_array, *comp_zone_row_range, *comp_zone_col_range, target_geometry)
+    
+    def sort_parallel_lattice_by_row(self, state_array, comp_zone_row_range, comp_zone_col_range, target_geometry):
+        """Function for sorting lattice geometries row by row
+        
+        :param state_array: The array of boolean values to be sorted
+        :type state_array: np.ndarray[bool]
+        :param comp_zone_row_range: Tuple (start,end) of start(inclusive) and end(exclusive) of rows in computational zone
+        :type comp_zone_row_range: tuple(int,int)
+        :param comp_zone_col_range: Tuple (start,end) of start(inclusive) and end(exclusive) of columns in computational zone
+        :type comp_zone_col_range: tuple(int,int)
+        :param target_geometry: The array of boolean values specifying the target geometry
+        :type target_geometry: np.ndarray[bool]
+        :raises TypeError: state_array must be numpy bool array
+        :raises TypeError: state_array must be dtype bool
+        :raises TypeError: target_geometry must be numpy bool array
+        :raises TypeError: target_geometry must be dtype bool
+        :return: A list of moves to sort array or None if sorting has failed. A ParallelMove contains .steps, which is a list of ParallelMoveStep objects, each containing .colSelection and .rowSelection, which are lists of doubles
+        :rtype: list[ParallelMove], optional
+        """
+        if not isinstance(state_array, np.ndarray):
+            raise TypeError("state_array must be numpy bool array")
+        if not state_array.dtype == bool:
+            raise TypeError("state_array must be dtype bool")
+        if not isinstance(target_geometry, np.ndarray):
+            raise TypeError("state_array must be numpy bool array")
+        if not target_geometry.dtype == bool:
+            raise TypeError("state_array must be dtype bool")
+        return resorting_cpp.sortLatticeByRowParallel(state_array, *comp_zone_row_range, *comp_zone_col_range, target_geometry)
 
     def flush_logs(self):
         """Function for flushing the logs
