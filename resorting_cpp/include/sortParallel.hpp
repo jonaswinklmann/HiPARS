@@ -21,9 +21,9 @@
 #define ALLOW_MOVES_BETWEEN_COLS true
 #define ALLOW_MULTIPLE_MOVES_PER_ATOM false
 
-#define ALLOW_MOVING_EMPTY_TRAP_ONTO_OCCUPIED false
+#define ALLOW_MOVING_EMPTY_TRAP_ONTO_OCCUPIED true
 
-#define ALLOW_DIAGONAL_MOVEMENT false
+#define ALLOW_DIAGONAL_MOVEMENT true
 
 #define NUM_THREADS 8
 
@@ -38,10 +38,9 @@ public:
     std::vector<Step> steps;
     ParallelMove() : steps() {};
     static ParallelMove fromStartAndEnd(
-        StateArrayAccessor& stateArray,
-        ParallelMove::Step start, ParallelMove::Step end, std::shared_ptr<spdlog::logger> logger);
+        ArrayAccessor& stateArray, ParallelMove::Step start, ParallelMove::Step end, std::shared_ptr<spdlog::logger> logger);
     double cost();
-    bool execute(StateArrayAccessor& stateArray, std::shared_ptr<spdlog::logger> logger,
+    bool execute(ArrayAccessor& stateArray, std::shared_ptr<spdlog::logger> logger,
         std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>> alreadyMoved = std::nullopt) const;
 };
 

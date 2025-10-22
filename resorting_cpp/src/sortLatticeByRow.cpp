@@ -18,7 +18,8 @@
 #include "config.hpp"
 #include "spdlog/sinks/basic_file_sink.h"
 
-bool& accessStateArrayDimIndepedent(StateArrayAccessor& stateArray, 
+// Provides access to array data while possibly flipping indices, useful due to independence on dimension
+bool& accessStateArrayDimIndepedent(ArrayAccessor& stateArray, 
     Eigen::Index indexXC, Eigen::Index indexAC, bool vertical)
 {
     if(vertical)
@@ -31,93 +32,182 @@ bool& accessStateArrayDimIndepedent(StateArrayAccessor& stateArray,
     }
 }
 
-void clearFirstNRowsOrCols(StateArrayAccessor& stateArray,
-    bool vertical, unsigned int count, std::vector<ParallelMove>& moveList, unsigned int arraySizeAC,
-    unsigned int maxTones, double spacingXC, int targetGapXC, std::shared_ptr<spdlog::logger> logger)
+// 0 for start, array size for end, anything in between for start of higher-index part
+std::optional<int> determineBestStartPosition(ArrayAccessor& stateArray,
+    bool vertical, unsigned int sortingChannelWidth, std::vector<ParallelMove>& moveList, unsigned int arraySizeXC,
+    size_t compZoneXCStart, size_t compZoneXCEnd, 
+    const std::vector<std::vector<int>>& unusableAtoms, 
+    const std::vector<std::vector<int>>& usableAtoms, 
+    const std::vector<std::vector<int>>& targetSites)
 {
-    int nextIndexToDealWith = 0;
-    if(((vertical && AOD_ROW_LIMIT >= count) || (!vertical && AOD_COL_LIMIT >= count)) && 
-        count * maxTones <= AOD_TOTAL_LIMIT && spacingXC >= MIN_DIST_FROM_OCC_SITES)
+    unsigned int indicesToClear = (sortingChannelWidth + 1) * 2;
+
+    std::optional<int> bestLastIndexBeforeChannel = std::nullopt;
+    std::optional<double> bestDist = std::nullopt;
+
+    // Only consider starting from the middle if movement parallelization even makes sense
+    if(((vertical && AOD_COL_LIMIT > 1 && AOD_ROW_LIMIT < AOD_TOTAL_LIMIT) || 
+        (!vertical && AOD_ROW_LIMIT > 1 && AOD_COL_LIMIT < AOD_TOTAL_LIMIT)) && arraySizeXC > indicesToClear)
     {
-        while(nextIndexToDealWith < (int)arraySizeAC)
+        unsigned int usableBeforeChannel = 0;
+        unsigned int usableAfterChannel = std::accumulate(
+            usableAtoms.begin() + indicesToClear, usableAtoms.end(), 0u, 
+            [](unsigned int init, const auto& elem) { return init + elem.size(); });
+
+        unsigned int requiredBeforeChannel = std::accumulate(
+            targetSites.begin(), targetSites.begin() + sortingChannelWidth + 1, 0u, 
+            [](unsigned int init, const auto& elem) { return init + elem.size(); });
+        unsigned int requiredAfterChannel = std::accumulate(
+            targetSites.begin() + sortingChannelWidth + 1, targetSites.end(), 0u, 
+            [](unsigned int init, const auto& elem) { return init + elem.size(); });
+
+        // Iterate over possible starting positions and use the one that has enough atoms on both sides while being as centered as possible
+        for(size_t lastIndexBeforeChannel = 0; lastIndexBeforeChannel < arraySizeXC - indicesToClear - 1; lastIndexBeforeChannel++)
         {
-            ParallelMove move;
-            ParallelMove::Step start;
-            ParallelMove::Step end;
-            std::vector<double> *startSelectionAC, *endSelectionAC;
-            if(vertical)
+            // Update number of existing and required atoms
+            usableBeforeChannel += usableAtoms[lastIndexBeforeChannel].size();
+            usableAfterChannel -= usableAtoms[lastIndexBeforeChannel + indicesToClear].size();
+            requiredBeforeChannel += targetSites[lastIndexBeforeChannel + sortingChannelWidth + 1].size();
+            requiredAfterChannel -= targetSites[lastIndexBeforeChannel + sortingChannelWidth + 1].size();
+
+            // Check if atoms numbers suffice. If so, use it if it is the closest index to the center yet
+            // This could be done more efficiently
+            double dist = abs((double)(arraySizeXC - 1) / 2. - ((double)(lastIndexBeforeChannel + sortingChannelWidth) + 1.5));
+            if(usableBeforeChannel >= requiredBeforeChannel && usableAfterChannel >= requiredAfterChannel && 
+                (!bestLastIndexBeforeChannel.has_value() || !bestDist.has_value() || dist < bestDist.value()))
             {
-                for(int i = 0; i < (int)count; i++)
-                {
-                    start.colSelection.push_back(i);
-                    end.colSelection.push_back(-(int)count - targetGapXC + 1 + i);
-                }
-                startSelectionAC = &start.rowSelection;
-                endSelectionAC = &end.rowSelection;
-            }
-            else
-            {
-                for(int i = 0; i < (int)count; i++)
-                {
-                    start.rowSelection.push_back(i);
-                    end.rowSelection.push_back(-(int)count - targetGapXC + 1 + i);
-                }
-                startSelectionAC = &start.colSelection;
-                endSelectionAC = &end.colSelection;
-            }
-            for(; nextIndexToDealWith < (int)arraySizeAC && startSelectionAC->size() < maxTones; nextIndexToDealWith++)
-            {
-                bool indexRequired = false;
-                for(int i = 0; i < (int)count; i++)
-                {
-                    if(accessStateArrayDimIndepedent(stateArray, i, nextIndexToDealWith, vertical))
-                    {
-                        indexRequired = true;
-                    }
-                }
-                if(indexRequired)
-                {
-                    startSelectionAC->push_back(nextIndexToDealWith);
-                    endSelectionAC->push_back(nextIndexToDealWith);
-                }
-            }
-            if(startSelectionAC->size() > 0)
-            {
-                move.steps.push_back(std::move(start));
-                move.steps.push_back(std::move(end));
-                move.execute(stateArray, logger);
-                moveList.push_back(move);
+                bestLastIndexBeforeChannel = lastIndexBeforeChannel;
+                bestDist = dist;
             }
         }
     }
+
+    if(bestLastIndexBeforeChannel.has_value())
+    {
+        return bestLastIndexBeforeChannel.value() + sortingChannelWidth + 2;
+    }
     else
     {
-        for(int i = 0; i < (int)count; i++)
+        // If no index was found before, take the first one that has sufficiently many atoms on both sides
+        unsigned int totalTargetSites = std::accumulate(targetSites.begin(), targetSites.end(), 0u, 
+            [](unsigned int init, const auto& elem) { return init + elem.size(); });
+        unsigned int excessStartingLowIndex = std::accumulate(
+            usableAtoms.begin() + sortingChannelWidth + 1, usableAtoms.end(), 0u, 
+            [](unsigned int init, const auto& elem) { return init + elem.size(); }) - totalTargetSites;
+        unsigned int excessStartingHighIndex = std::accumulate(
+            usableAtoms.begin(), usableAtoms.end() - sortingChannelWidth - 1, 0u, 
+            [](unsigned int init, const auto& elem) { return init + elem.size(); }) - totalTargetSites;
+        if(excessStartingLowIndex >= 0 && excessStartingHighIndex >= 0)
         {
-            nextIndexToDealWith = 0;
+            if(compZoneXCStart > arraySizeXC - compZoneXCEnd)
+            {
+                return arraySizeXC;
+            }
+            else if(compZoneXCStart < arraySizeXC - compZoneXCEnd)
+            {
+                return 0;
+            }
+        }
+        if(excessStartingLowIndex >= 0)
+        {
+            return 0;
+        }
+        else if(excessStartingHighIndex >= 0)
+        {
+            return arraySizeXC;
+        }
+        else
+        {
+            return std::nullopt;
+        }
+    }
+}
+
+// Remove all atoms from initial sorting channel
+void clearSortingChannel(ArrayAccessor& stateArray, int startIndex,
+    bool vertical, unsigned int sortingChannelWidth, std::vector<ParallelMove>& moveList, unsigned int arraySizeXC, unsigned int arraySizeAC,
+    unsigned int maxTones, double spacingXC, int targetGapXC, int targetGapAC, std::vector<std::vector<int>>& usableAtoms, 
+    std::vector<std::vector<int>>& unusableAtoms, std::shared_ptr<spdlog::logger> logger)
+{
+    if(startIndex <= (int)sortingChannelWidth + 1 || startIndex >= (int)arraySizeXC - (int)sortingChannelWidth - 1)
+    {
+        // Remove atoms at one side, atoms can just be moved away directly
+        bool atLowIndex = startIndex <= (int)sortingChannelWidth + 1;
+        int nextIndexToDealWith = 0;
+        unsigned int count = sortingChannelWidth + 1;
+
+        // Remove atoms from registers
+        if(atLowIndex)
+        {
+            for(int i = 0; i < (int)count; i++)
+            {
+                usableAtoms[i].clear();
+                unusableAtoms[i].clear();
+            }
+        }
+        else
+        {
+            for(int i = 0; i < (int)count; i++)
+            {
+                usableAtoms[arraySizeXC - count + i].clear();
+                unusableAtoms[arraySizeXC - count + i].clear();
+            }
+        }
+
+        // Check whether it is possible and makes sense to remove all indices simultaneously
+        if(((vertical && AOD_ROW_LIMIT >= count) || (!vertical && AOD_COL_LIMIT >= count)) && 
+            count * maxTones <= AOD_TOTAL_LIMIT && spacingXC >= MIN_DIST_FROM_OCC_SITES)
+        {
             while(nextIndexToDealWith < (int)arraySizeAC)
             {
+                // Create move to remove atoms from sorting channel
                 ParallelMove move;
-                ParallelMove::Step start;
-                ParallelMove::Step end;
-                std::vector<double> *startSelectionAC, *endSelectionAC;
+                ParallelMove::Step start, end;
+                std::vector<double> *startSelectionXC, *endSelectionXC, *startSelectionAC, *endSelectionAC;
                 if(vertical)
                 {
-                    start.colSelection.push_back(i);
-                    end.colSelection.push_back(-1);
+                    startSelectionXC = &start.colSelection;
+                    endSelectionXC = &end.colSelection;
                     startSelectionAC = &start.rowSelection;
                     endSelectionAC = &end.rowSelection;
                 }
                 else
                 {
-                    start.rowSelection.push_back(i);
-                    end.rowSelection.push_back(-1);
+                    startSelectionXC = &start.rowSelection;
+                    endSelectionXC = &end.rowSelection;
                     startSelectionAC = &start.colSelection;
                     endSelectionAC = &end.colSelection;
                 }
+                if(atLowIndex)
+                {
+                    for(int i = 0; i < (int)count; i++)
+                    {
+                        startSelectionXC->push_back(i);
+                        endSelectionXC->push_back(-(int)count - targetGapXC + 1 + i);
+                    }
+                }
+                else
+                {
+                    for(int i = 0; i < (int)count; i++)
+                    {
+                        startSelectionXC->push_back(arraySizeXC - count + i);
+                        endSelectionXC->push_back(arraySizeXC + targetGapXC - 1 + i);
+                    }
+                }
+
+                // Add indices along sorting channel
                 for(; nextIndexToDealWith < (int)arraySizeAC && startSelectionAC->size() < maxTones; nextIndexToDealWith++)
                 {
-                    if(accessStateArrayDimIndepedent(stateArray, i, nextIndexToDealWith, vertical))
+                    bool indexRequired = false;
+                    for(int i = 0; i < (int)count; i++)
+                    {
+                        int indexXC = atLowIndex ? i : arraySizeXC - 1 - i;
+                        if(accessStateArrayDimIndepedent(stateArray, indexXC, nextIndexToDealWith, vertical))
+                        {
+                            indexRequired = true;
+                        }
+                    }
+                    if(indexRequired)
                     {
                         startSelectionAC->push_back(nextIndexToDealWith);
                         endSelectionAC->push_back(nextIndexToDealWith);
@@ -128,101 +218,404 @@ void clearFirstNRowsOrCols(StateArrayAccessor& stateArray,
                     move.steps.push_back(std::move(start));
                     move.steps.push_back(std::move(end));
                     move.execute(stateArray, logger);
-                    moveList.push_back(std::move(move));
+                    moveList.push_back(move);
+                }
+            }
+        }
+        else
+        {
+            // Remove atoms index by index as there are not enough AOD tones or 
+            // the spacing does not allow for arbitrary targeting in the outer indices
+            for(int i = 0; i < (int)count; i++)
+            {
+                nextIndexToDealWith = 0;
+                while(nextIndexToDealWith < (int)arraySizeAC)
+                {
+                    // Create move to remove atoms from sorting channel
+                    ParallelMove move;
+                    ParallelMove::Step start;
+                    ParallelMove::Step end;
+                    std::vector<double> *startSelectionXC, *endSelectionXC, *startSelectionAC, *endSelectionAC;
+                    if(vertical)
+                    {
+                        startSelectionXC = &start.colSelection;
+                        endSelectionXC = &end.colSelection;
+                        startSelectionAC = &start.rowSelection;
+                        endSelectionAC = &end.rowSelection;
+                    }
+                    else
+                    {
+                        startSelectionXC = &start.rowSelection;
+                        endSelectionXC = &end.rowSelection;
+                        startSelectionAC = &start.colSelection;
+                        endSelectionAC = &end.colSelection;
+                    }
+                    if(atLowIndex)
+                    {
+                        startSelectionXC->push_back(i);
+                        endSelectionXC->push_back(-(int)count - targetGapXC + 1 + i);
+                    }
+                    else
+                    {
+                        startSelectionXC->push_back(arraySizeXC - count + i);
+                        endSelectionXC->push_back(arraySizeXC + targetGapXC - 1 + i);
+                    }
+
+                    // Add indices along sorting channel
+                    for(; nextIndexToDealWith < (int)arraySizeAC && startSelectionAC->size() < maxTones; nextIndexToDealWith++)
+                    {
+                        int indexXC = atLowIndex ? i : arraySizeXC - 1 - i;
+                        if(accessStateArrayDimIndepedent(stateArray, indexXC, nextIndexToDealWith, vertical))
+                        {
+                            startSelectionAC->push_back(nextIndexToDealWith);
+                            endSelectionAC->push_back(nextIndexToDealWith);
+                        }
+                    }
+                    if(startSelectionAC->size() > 0)
+                    {
+                        move.steps.push_back(std::move(start));
+                        move.steps.push_back(std::move(end));
+                        move.execute(stateArray, logger);
+                        moveList.push_back(std::move(move));
+                    }
+                }
+            }
+        }
+    }
+    else
+    {
+        for(int i = startIndex - (int)sortingChannelWidth - 1; i <= (int)startIndex + (int)sortingChannelWidth; i++)
+        {
+            usableAtoms[i].clear();
+            unusableAtoms[i].clear();
+        }
+
+        // Remove atoms for sorting channels that start from within the array
+        std::vector<double> targetIndicesXC;
+        unsigned int desiredIndices = 2 * (sortingChannelWidth + 1);
+        if(vertical)
+        {
+            if(AOD_COL_LIMIT < desiredIndices)
+            {
+                desiredIndices = AOD_COL_LIMIT;
+            }
+        }
+        else
+        {
+            if(AOD_ROW_LIMIT < desiredIndices)
+            {
+                desiredIndices = AOD_ROW_LIMIT;
+            }
+        }
+        if(desiredIndices * maxTones > AOD_TOTAL_LIMIT)
+        {
+            desiredIndices = AOD_TOTAL_LIMIT / maxTones;
+        }
+        if(desiredIndices < 1)
+        {
+            desiredIndices = 1;
+        }
+
+        if(desiredIndices >= 2 * (sortingChannelWidth + 1) && spacingXC >= MIN_DIST_FROM_OCC_SITES)
+        {
+            // Remove all at once if max index count allows for it
+            int nextIndexToDealWith = 0;
+            while(nextIndexToDealWith < (int)arraySizeAC)
+            {
+                ParallelMove move;
+                ParallelMove::Step start;
+                ParallelMove::Step end;
+                std::vector<double> *startSelectionXC, *endSelectionXC, *startSelectionAC, *endSelectionAC;
+                if(vertical)
+                {
+                    startSelectionXC = &start.colSelection;
+                    endSelectionXC = &end.colSelection;
+                    startSelectionAC = &start.rowSelection;
+                    endSelectionAC = &end.rowSelection;
+                }
+                else
+                {
+                    startSelectionXC = &start.rowSelection;
+                    endSelectionXC = &end.rowSelection;
+                    startSelectionAC = &start.colSelection;
+                    endSelectionAC = &end.colSelection;
+                }
+                for(int i = startIndex - (int)sortingChannelWidth - 1; i <= (int)startIndex + (int)sortingChannelWidth; i++)
+                {
+                    startSelectionXC->push_back(i);
+                    endSelectionXC->push_back(i);
+                }
+
+                // Add indices along sorting channel
+                for(; nextIndexToDealWith < (int)arraySizeAC && startSelectionAC->size() < maxTones; nextIndexToDealWith++)
+                {
+                    bool indexRequired = false;
+                    for(int i = startIndex - (int)sortingChannelWidth - 1; i <= (int)startIndex + (int)sortingChannelWidth; i++)
+                    {
+                        if(accessStateArrayDimIndepedent(stateArray, i, nextIndexToDealWith, vertical))
+                        {
+                            indexRequired = true;
+                            break;
+                        }
+                    }
+                    if(indexRequired)
+                    {
+                        startSelectionAC->push_back(nextIndexToDealWith);
+                    }
+                }
+                if(nextIndexToDealWith >= (int)arraySizeAC)
+                {
+                    // Remove indices towards side closer side
+                    int indicesLowerOrEqualMiddle = 0, indicesHigherMiddle = 0;
+                    for(const auto& indexAC : *startSelectionAC)
+                    {
+                        if(indexAC <= (int)arraySizeAC / 2)
+                        {
+                            indicesLowerOrEqualMiddle++;
+                        }
+                        else
+                        {
+                            indicesHigherMiddle++;
+                        }
+                    }
+                    for(int i = 0; i < indicesLowerOrEqualMiddle; i++)
+                    {
+                        endSelectionAC->push_back(-indicesLowerOrEqualMiddle - targetGapAC + 1 + i);
+                    }
+                    for(int i = 0; i < indicesHigherMiddle; i++)
+                    {
+                        endSelectionAC->push_back(arraySizeAC + targetGapAC - 1 + i);
+                    }
+                }
+                else
+                {
+                    for(int i = 0; i < (int)startSelectionAC->size(); i++)
+                    {
+                        endSelectionAC->push_back(-(int)startSelectionAC->size() - targetGapAC + 1 + i);
+                    }
+                }
+                if(startSelectionAC->size() > 0)
+                {
+                    move.steps.push_back(std::move(start));
+                    move.steps.push_back(std::move(end));
+                    move.execute(stateArray, logger);
+                    moveList.push_back(move);
+                }
+            }
+        }
+        else
+        {
+            // Remove atoms index-by-index
+            double channelStart = (double)startIndex - sortingChannelWidth - 2 + (double)MIN_DIST_FROM_OCC_SITES / (double)spacingXC;
+            double channelEnd = (double)startIndex + sortingChannelWidth + 1 - (double)MIN_DIST_FROM_OCC_SITES / (double)spacingXC;
+            unsigned int handledIndicesXC = 0;
+            while(handledIndicesXC < 2 * (sortingChannelWidth + 1))
+            {
+                std::vector<double> usedStartIndicesXC, usedEndIndicesXC;
+                bool outsideChannel = false;
+                for(size_t i = 0; i < desiredIndices && handledIndicesXC < 2 * (sortingChannelWidth + 1) && !outsideChannel; i++)
+                {
+                    int nextIndex = startIndex;
+                    if(handledIndicesXC % 2 == 0)
+                    {
+                        nextIndex += handledIndicesXC / 2;
+                    }
+                    else
+                    {
+                        nextIndex -= handledIndicesXC / 2 - 1;
+                    }
+                    if(nextIndex < channelStart - DOUBLE_EQUIVALENCE_THRESHOLD || nextIndex > channelEnd + DOUBLE_EQUIVALENCE_THRESHOLD)
+                    {
+                        // If we are outside the sorting channel, we only take one index 
+                        // at a time as shadow traps could otherwise impact adjacent atoms
+                        if(!usedStartIndicesXC.empty())
+                        {
+                            break;
+                        }
+                        outsideChannel = true;
+                    }
+                    usedStartIndicesXC.push_back(nextIndex);
+                    handledIndicesXC++;
+                }
+                if(outsideChannel)
+                {
+                    usedEndIndicesXC.push_back((double)startIndex - 0.5);
+                }
+                else
+                {
+                    usedEndIndicesXC = usedStartIndicesXC;
+                }
+
+                int nextIndexToDealWith = 0;
+                while(nextIndexToDealWith < (int)arraySizeAC)
+                {
+                    ParallelMove move;
+                    ParallelMove::Step start;
+                    ParallelMove::Step end;
+                    std::vector<double> *startSelectionAC, *endSelectionAC;
+                    if(vertical)
+                    {
+                        start.colSelection = usedStartIndicesXC;
+                        end.colSelection = usedEndIndicesXC;
+                        startSelectionAC = &start.rowSelection;
+                        endSelectionAC = &end.rowSelection;
+                    }
+                    else
+                    {
+                        start.rowSelection = usedStartIndicesXC;
+                        end.rowSelection = usedEndIndicesXC;
+                        startSelectionAC = &start.colSelection;
+                        endSelectionAC = &end.colSelection;
+                    }
+
+                    for(; nextIndexToDealWith < (int)arraySizeAC && startSelectionAC->size() < maxTones; nextIndexToDealWith++)
+                    {
+                        bool indexRequired = false;
+                        for(int i = channelStart; i < (int)channelEnd; i++)
+                        {
+                            if(accessStateArrayDimIndepedent(stateArray, i, nextIndexToDealWith, vertical))
+                            {
+                                indexRequired = true;
+                                break;
+                            }
+                        }
+                        if(indexRequired)
+                        {
+                            startSelectionAC->push_back(nextIndexToDealWith);
+                            endSelectionAC->push_back(nextIndexToDealWith);
+                        }
+                    }
+                    if(startSelectionAC->size() > 0)
+                    {
+                        move.steps.push_back(std::move(start));
+                        move.steps.push_back(std::move(end));
+                        move.execute(stateArray, logger);
+                        moveList.push_back(move);
+                    }
                 }
             }
         }
     }
 }
 
-bool sortRemainingRowsOrCols(StateArrayAccessor& stateArray,
-    bool vertical, unsigned int sortingChannelWidth, std::vector<ParallelMove>& moveList, unsigned int arraySizeAC, 
-    unsigned int arraySizeXC, unsigned int maxTones, double spacingXC, std::vector<std::vector<int>>& usableAtoms, 
-    std::vector<std::vector<int>>& unusableAtoms, std::vector<std::vector<int>>& targetSites, 
-    size_t compZoneXCStart, size_t compZoneXCEnd, size_t compZoneACStart, size_t compZoneACEnd,
-    int targetGapXC, int targetGapAC, std::shared_ptr<spdlog::logger> logger)
+// Create move with only one index across the channel direction
+bool createSingleIndexMoves(ArrayAccessor& stateArray, bool vertical, std::vector<ParallelMove>& moveList, 
+    std::vector<int>& startIndices, int dir, std::optional<std::vector<int>*> endIndices, 
+    int endIndexXC, unsigned int targetCount,
+    int arraySizeXC, int arraySizeAC, int sortingChannelWidth, int indexXC, int targetGapAC, 
+    unsigned int maxTonesXC, unsigned int maxTonesAC, double spacingXC, 
+    std::vector<std::vector<int>>& usableAtoms, bool parkingMove, std::shared_ptr<spdlog::logger> logger)
 {
-    std::vector<size_t> parkingSpotsPerSuitableIndexXC;
-    for(int i = (compZoneACStart - targetGapAC + 1) / targetGapAC; i >= 0; i--)
+    unsigned int count = 0;
+    auto indexAC = startIndices.begin();
+
+    std::optional<std::vector<int>::iterator> targetIndexAC = std::nullopt;
+    if(endIndices.has_value())
     {
-        parkingSpotsPerSuitableIndexXC.push_back(i * targetGapAC);
-    }
-    for(size_t i = arraySizeAC; i >= compZoneACEnd + targetGapAC - 1; i -= targetGapAC)
-    {
-        parkingSpotsPerSuitableIndexXC.push_back(i);
-    }
-    size_t currentTargetIndexXC = compZoneXCStart;
-    unsigned int requiredAtoms = 0;
-    std::vector<size_t> parkingSpotsRemainingAtCurrentIndexXC;
-    unsigned int totalRequiredAtoms = std::accumulate(targetSites.begin(), targetSites.end(), 0u, [](unsigned int init, const auto& elem) { return init + elem.size(); });
-    for(size_t indexXC = sortingChannelWidth + 1; indexXC < arraySizeXC; indexXC++)
-    {
-        if(indexXC >= compZoneXCEnd && totalRequiredAtoms == 0)
+        if(endIndices.value()->size() == 0)
         {
             return true;
         }
-        size_t targetIndexXC = indexXC - sortingChannelWidth - 1;
-
-        requiredAtoms += targetSites[targetIndexXC].size();
-        unsigned int parkingSpots = parkingSpotsRemainingAtCurrentIndexXC.size();
-        for(size_t parkingSpotXC = currentTargetIndexXC + 1; parkingSpotXC <= targetIndexXC; parkingSpotXC++)
+        targetIndexAC = endIndices.value()->begin();
+    }
+    
+    // Create moves while there are atoms and only as many as requested
+    while(indexAC != startIndices.end() && count < targetCount)
+    {
+        // Create move data
+        ParallelMove move;
+        ParallelMove::Step start;
+        ParallelMove::Step elbow1;
+        ParallelMove::Step elbow2;
+        std::vector<double> *startSelectionAC, *elbow1SelectionAC, *elbow2SelectionAC;
+        if(vertical)
         {
-            if((parkingSpotXC - compZoneXCStart + 1) % targetGapXC == 0)
-            {
-                parkingSpots += parkingSpotsPerSuitableIndexXC.size();
-            }
+            start.colSelection.push_back(indexXC);
+            elbow1.colSelection.push_back((double)indexXC - (double)dir * (double)(sortingChannelWidth + 1) / 2.);
+            elbow2.colSelection.push_back((double)indexXC - (double)dir * (double)(sortingChannelWidth + 1) / 2.);
+            startSelectionAC = &start.rowSelection;
+            elbow1SelectionAC = &elbow1.rowSelection;
+            elbow2SelectionAC = &elbow2.rowSelection;
+        }
+        else
+        {
+            start.rowSelection.push_back(indexXC);
+            elbow1.rowSelection.push_back((double)indexXC - (double)dir * (double)(sortingChannelWidth + 1) / 2.);
+            elbow2.rowSelection.push_back((double)indexXC - (double)dir * (double)(sortingChannelWidth + 1) / 2.);
+            startSelectionAC = &start.colSelection;
+            elbow1SelectionAC = &elbow1.colSelection;
+            elbow2SelectionAC = &elbow2.colSelection;
         }
 
-        // Excess atoms that cannot be used for filling target sites or parking spots are thrown away
-        if(targetIndexXC >= compZoneXCStart)
+        if(targetIndexAC.has_value())
         {
-            while(usableAtoms[indexXC].size() > requiredAtoms + parkingSpots)
+            // If there are target indices, i.e, not a removal move, iterate over start and end indices and add to move accordingly
+            while(indexAC != startIndices.end() && targetIndexAC.value() != endIndices.value()->end() && 
+                startSelectionAC->size() < maxTonesAC && count < targetCount)
             {
-                if(usableAtoms[indexXC][0] > (int)arraySizeAC - usableAtoms[indexXC].back() - 1)
+                count++;
+                startSelectionAC->push_back(*indexAC);
+                elbow1SelectionAC->push_back(*indexAC);
+                elbow2SelectionAC->push_back(*targetIndexAC.value());
+
+                indexAC = startIndices.erase(indexAC);
+                if(parkingMove)
                 {
-                    unusableAtoms[indexXC].insert(std::upper_bound(unusableAtoms[indexXC].begin(), 
-                        unusableAtoms[indexXC].end(), usableAtoms[indexXC][0]), usableAtoms[indexXC][0]);
-                    usableAtoms[indexXC].erase(usableAtoms[indexXC].begin());
+                    usableAtoms[endIndexXC].push_back(*targetIndexAC.value());
+                }
+
+                // Advance target index iterator
+                if(endIndices.has_value())
+                {
+                    targetIndexAC = endIndices.value()->erase(targetIndexAC.value());
                 }
                 else
                 {
-                    unusableAtoms[indexXC].insert(std::upper_bound(unusableAtoms[indexXC].begin(), 
-                        unusableAtoms[indexXC].end(), usableAtoms[indexXC].back()), usableAtoms[indexXC].back());
-                    usableAtoms[indexXC].pop_back();
+                    // Should never be reached
+                    logger->error("End indices don't exist even though its iterator has a value. Aborting.");
+                    return false;
                 }
             }
-        }
-        auto indexAC = unusableAtoms[indexXC].begin();
-        while(indexAC != unusableAtoms[indexXC].end())
-        {
-            ParallelMove move;
-            ParallelMove::Step start;
-            ParallelMove::Step elbow;
-            ParallelMove::Step end;
-            std::vector<double> *startSelectionAC, *elbowSelectionAC, *endSelectionAC;
-            if(vertical)
+            if(startSelectionAC->size() > 0)
             {
-                start.colSelection.push_back(indexXC);
-                elbow.colSelection.push_back((double)indexXC - (double)(sortingChannelWidth + 1) / 2.);
-                end.colSelection.push_back((double)indexXC - (double)(sortingChannelWidth + 1) / 2.);
-                startSelectionAC = &start.rowSelection;
-                elbowSelectionAC = &elbow.rowSelection;
-                endSelectionAC = &end.rowSelection;
+                // Execute move if it contains something
+                if(parkingMove)
+                {
+                    std::sort(elbow2SelectionAC->begin(), elbow2SelectionAC->end());
+                }
+                ParallelMove::Step end;
+                if(vertical)
+                {
+                    end.colSelection.push_back(endIndexXC);
+                    end.rowSelection = *elbow2SelectionAC;
+                }
+                else
+                {
+                    end.rowSelection.push_back(endIndexXC);
+                    end.colSelection = *elbow2SelectionAC;
+                }
+                move.steps.push_back(std::move(start));
+                move.steps.push_back(std::move(elbow1));
+                move.steps.push_back(std::move(elbow2));
+                move.steps.push_back(std::move(end));
+                move.execute(stateArray, logger);
+                moveList.push_back(std::move(move));
             }
             else
             {
-                start.rowSelection.push_back(indexXC);
-                elbow.rowSelection.push_back((double)indexXC - (double)(sortingChannelWidth + 1) / 2.);
-                end.rowSelection.push_back((double)indexXC - (double)(sortingChannelWidth + 1) / 2.);
-                startSelectionAC = &start.colSelection;
-                elbowSelectionAC = &elbow.colSelection;
-                endSelectionAC = &end.colSelection;
+                return true;
             }
+        }
+        else
+        {
+            // There are no target indices. This should be a removal move
             int indicesLowerOrEqualMiddle = 0, indicesHigherMiddle = 0;
-            for(; indexAC != unusableAtoms[indexXC].end() && startSelectionAC->size() < maxTones; indexAC++)
+            for(; indexAC != startIndices.end() && startSelectionAC->size() < maxTonesAC && 
+                count < targetCount; indexAC++)
             {
+                count++;
                 startSelectionAC->push_back(*indexAC);
-                elbowSelectionAC->push_back(*indexAC);
+                elbow1SelectionAC->push_back(*indexAC);
                 if(*indexAC <= (int)arraySizeAC / 2)
                 {
                     indicesLowerOrEqualMiddle++;
@@ -232,423 +625,720 @@ bool sortRemainingRowsOrCols(StateArrayAccessor& stateArray,
                     indicesHigherMiddle++;
                 }
             }
-            for(int i = 0; i < indicesLowerOrEqualMiddle; i++)
+            // Move towards closer side
+            if(indicesLowerOrEqualMiddle > 0 || indicesHigherMiddle > 0)
             {
-                endSelectionAC->push_back(-indicesLowerOrEqualMiddle - targetGapAC + 1 + i);
-            }
-            for(int i = 0; i < indicesHigherMiddle; i++)
-            {
-                endSelectionAC->push_back(arraySizeAC + targetGapAC - 1 + i);
-            }
-            move.steps.push_back(std::move(start));
-            move.steps.push_back(std::move(elbow));
-            move.steps.push_back(std::move(end));
-            move.execute(stateArray, logger);
-            moveList.push_back(std::move(move));
-        }
-        if(targetIndexXC < compZoneXCStart)
-        {
-            indexAC = usableAtoms[indexXC].begin();
-            while(indexAC != usableAtoms[indexXC].end())
-            {
-                ParallelMove move;
-                ParallelMove::Step start;
-                ParallelMove::Step end;
-                std::vector<double> *startSelectionAC, *endSelectionAC;
-                if(vertical)
+                for(int i = 0; i < indicesLowerOrEqualMiddle; i++)
                 {
-                    start.colSelection.push_back(indexXC);
-                    end.colSelection.push_back(targetIndexXC);
-                    startSelectionAC = &start.rowSelection;
-                    endSelectionAC = &end.rowSelection;
+                    elbow2SelectionAC->push_back(-indicesLowerOrEqualMiddle - targetGapAC + 1 + i);
                 }
-                else
+                for(int i = 0; i < indicesHigherMiddle; i++)
                 {
-                    start.rowSelection.push_back(indexXC);
-                    end.rowSelection.push_back(targetIndexXC);
-                    startSelectionAC = &start.colSelection;
-                    endSelectionAC = &end.colSelection;
-                }
-                for(; indexAC != usableAtoms[indexXC].end() && startSelectionAC->size() < maxTones; indexAC++)
-                {
-                    startSelectionAC->push_back(*indexAC);
-                    endSelectionAC->push_back(*indexAC);
+                    elbow2SelectionAC->push_back(arraySizeAC + targetGapAC - 1 + i);
                 }
                 move.steps.push_back(std::move(start));
-                move.steps.push_back(std::move(end));
+                move.steps.push_back(std::move(elbow1));
+                move.steps.push_back(std::move(elbow2));
                 move.execute(stateArray, logger);
                 moveList.push_back(std::move(move));
             }
-            usableAtoms[targetIndexXC] = usableAtoms[indexXC];
-            usableAtoms[indexXC].clear();
-        }
-        else
-        {
-            while(!usableAtoms[indexXC].empty())
+            else
             {
-                while(usableAtoms[indexXC].size() > requiredAtoms && !parkingSpotsRemainingAtCurrentIndexXC.empty())
+                return true;
+            }
+        }
+    }
+
+    return true;
+}
+
+// Create move that combines moves from both sides in a smart way
+bool createCombinedMoves(ArrayAccessor& stateArray, bool vertical, std::vector<ParallelMove>& moveList,
+    std::set<int>& excludedStartIndices,
+    std::vector<int>& startIndicesLowIndex, std::vector<int>& startIndicesHighIndex,
+    std::optional<std::vector<int>*> endIndicesLowIndex, int endIndexXCLowIndex, 
+    std::optional<std::vector<int>*> endIndicesHighIndex, int endIndexXCHighIndex, 
+    unsigned int targetCountLowIndex, unsigned int targetCountHighIndex, 
+    int arraySizeXC, int arraySizeAC, int sortingChannelWidth, int indexXC[2], int targetGapAC, 
+    unsigned int maxTonesXC, unsigned int maxTonesAC, double spacingXC, 
+    std::vector<std::vector<int>>& usableAtoms, bool parkingMove, std::shared_ptr<spdlog::logger> logger)
+{
+    std::set<int> sharedIndices;
+
+    if(startIndicesLowIndex.size() > 0 && startIndicesHighIndex.size() > 0 &&
+        maxTonesXC >= 2 && 2 * maxTonesAC <= AOD_TOTAL_LIMIT && 
+        (targetCountLowIndex > 0 || targetCountHighIndex > 0))
+    {
+        // If spacing is sufficient, use union
+        // Otherwise, shadow traps might interfere so in that case only use intersection
+        std::set_intersection(startIndicesLowIndex.begin(), startIndicesLowIndex.end(),
+            startIndicesHighIndex.begin(), startIndicesHighIndex.end(), std::inserter(sharedIndices, sharedIndices.begin()));
+        for(const auto& excluded : excludedStartIndices)
+        {
+            sharedIndices.erase(excluded);
+        }
+
+        std::optional<std::vector<int>> sharedTargetIndices = std::nullopt;
+        if(endIndicesLowIndex.has_value() && endIndicesHighIndex.has_value())
+        {
+            sharedTargetIndices = std::vector<int>();
+            std::set_intersection((*endIndicesLowIndex.value()).begin(), (*endIndicesLowIndex.value()).end(),
+                (*endIndicesHighIndex.value()).begin(), (*endIndicesHighIndex.value()).end(), 
+                std::inserter(sharedTargetIndices.value(), sharedTargetIndices.value().begin()));
+        }    
+
+        if(sharedIndices.size() > 0 && (!sharedTargetIndices.has_value() || 
+            sharedTargetIndices.value().size() > 0))
+        {
+            // Calculate move count when using separate moves
+            unsigned int lowIndicesSeparate = targetCountLowIndex;
+            if(startIndicesLowIndex.size() < lowIndicesSeparate)
+            {
+                lowIndicesSeparate = startIndicesLowIndex.size();
+            }
+            if(endIndicesLowIndex.has_value() && endIndicesLowIndex.value()->size() < lowIndicesSeparate)
+            {
+                lowIndicesSeparate = endIndicesLowIndex.value()->size();
+            }
+            unsigned int highIndicesSeparate = targetCountHighIndex;
+            if(startIndicesHighIndex.size() < highIndicesSeparate)
+            {
+                highIndicesSeparate = startIndicesHighIndex.size();
+            }
+            if(endIndicesHighIndex.has_value() && endIndicesHighIndex.value()->size() < highIndicesSeparate)
+            {
+                highIndicesSeparate = endIndicesHighIndex.value()->size();
+            }
+            unsigned int moveCountSeparate = (lowIndicesSeparate - 1) / maxTonesAC + 1 + 
+                (highIndicesSeparate - 1) / maxTonesAC + 1;
+
+            // Calculate move count when combining moves
+            unsigned int usedSharedIndices = sharedIndices.size();
+            if(sharedTargetIndices.has_value() && sharedTargetIndices.value().size() < usedSharedIndices)
+            {
+                usedSharedIndices = sharedTargetIndices.value().size();
+            }
+            unsigned int moveCountCombined = (lowIndicesSeparate - usedSharedIndices - 1) / maxTonesAC + 1 + 
+                (highIndicesSeparate - usedSharedIndices - 1) / maxTonesAC + 1 + 
+                (usedSharedIndices - 1) / maxTonesAC + 1;
+            unsigned int fullCombinedMovesCount = usedSharedIndices / maxTonesAC;
+            unsigned int moveCountSplitUnfilledCombinedMove = moveCountSeparate - fullCombinedMovesCount;
+
+            unsigned int indicesInUnfilledCombinedMove = usedSharedIndices % maxTonesAC;
+            unsigned int indicesInUnfilledLowMove = (lowIndicesSeparate - usedSharedIndices) % maxTonesAC;
+            unsigned int indicesInUnfilledHighMove = (highIndicesSeparate - usedSharedIndices) % maxTonesAC;
+            unsigned int moveCountAddedSinglesToCombinedMove = moveCountCombined;
+            if(indicesInUnfilledCombinedMove + indicesInUnfilledLowMove + indicesInUnfilledHighMove <= maxTonesAC &&
+                indicesInUnfilledLowMove > 0 && indicesInUnfilledHighMove > 0)
+            {
+                moveCountAddedSinglesToCombinedMove -= 2;
+            }
+            else if((indicesInUnfilledCombinedMove + indicesInUnfilledLowMove <= maxTonesAC && 
+                indicesInUnfilledLowMove > 0) || 
+                (indicesInUnfilledCombinedMove + indicesInUnfilledHighMove <= maxTonesAC && 
+                indicesInUnfilledHighMove > 0) )
+            {
+                moveCountAddedSinglesToCombinedMove--;
+            }
+
+            if(spacingXC >= MIN_DIST_FROM_OCC_SITES && moveCountAddedSinglesToCombinedMove < moveCountCombined && 
+                moveCountAddedSinglesToCombinedMove < moveCountSplitUnfilledCombinedMove)
+            {
+                if(indicesInUnfilledCombinedMove + indicesInUnfilledLowMove <= maxTonesAC)
                 {
-                    ParallelMove move;
-                    ParallelMove::Step start, elbow1, elbow2, end;
-                    std::vector<double> *startSelectionAC, *endSelectionAC;
-                    if(vertical)
+                    indicesInUnfilledCombinedMove += indicesInUnfilledLowMove;
+                    std::set<int> indicesInOnlyLowStartRegister;
+                    std::set_difference(startIndicesLowIndex.begin(), startIndicesLowIndex.end(), 
+                        startIndicesHighIndex.begin(), startIndicesHighIndex.end(),
+                        std::inserter(indicesInOnlyLowStartRegister, indicesInOnlyLowStartRegister.begin()));
+                    unsigned int insertCount = 0;
+                    for(auto indexInOnlyLowStartRegister = indicesInOnlyLowStartRegister.begin();
+                        indexInOnlyLowStartRegister != indicesInOnlyLowStartRegister.end() && 
+                        insertCount < indicesInUnfilledLowMove; 
+                        indexInOnlyLowStartRegister++)
                     {
-                        start.colSelection.push_back(indexXC);
-                        elbow1.colSelection.push_back((double)indexXC - (double)(sortingChannelWidth + 1) / 2.);
-                        elbow2.colSelection.push_back((double)indexXC - (double)(sortingChannelWidth + 1) / 2.);
-                        end.colSelection.push_back(currentTargetIndexXC);
-                        startSelectionAC = &start.rowSelection;
-                        endSelectionAC = &end.rowSelection;
-                    }
-                    else
-                    {
-                        start.rowSelection.push_back(indexXC);
-                        elbow1.rowSelection.push_back((double)indexXC - (double)(sortingChannelWidth + 1) / 2.);
-                        elbow2.rowSelection.push_back((double)indexXC - (double)(sortingChannelWidth + 1) / 2.);
-                        end.rowSelection.push_back(currentTargetIndexXC);
-                        startSelectionAC = &start.colSelection;
-                        endSelectionAC = &end.colSelection;
-                    }
-
-                    while(usableAtoms[indexXC].size() > requiredAtoms && !parkingSpotsRemainingAtCurrentIndexXC.empty() && 
-                        startSelectionAC->size() < maxTones)
-                    {
-                        if(abs(usableAtoms[indexXC][0] - (int)(parkingSpotsRemainingAtCurrentIndexXC[0])) <
-                            abs(usableAtoms[indexXC].back() - (int)(parkingSpotsRemainingAtCurrentIndexXC.back())))
+                        if(!excludedStartIndices.contains(*indexInOnlyLowStartRegister))
                         {
-                            startSelectionAC->push_back(usableAtoms[indexXC][0]);
-                            endSelectionAC->push_back(parkingSpotsRemainingAtCurrentIndexXC[0]);
-                            usableAtoms[indexXC].erase(usableAtoms[indexXC].begin());
-                            usableAtoms[currentTargetIndexXC].push_back(parkingSpotsRemainingAtCurrentIndexXC[0]);
-                            parkingSpotsRemainingAtCurrentIndexXC.erase(parkingSpotsRemainingAtCurrentIndexXC.begin());
-                        }
-                        else
-                        {
-                            startSelectionAC->push_back(usableAtoms[indexXC].back());
-                            endSelectionAC->push_back(parkingSpotsRemainingAtCurrentIndexXC.back());
-                            usableAtoms[indexXC].pop_back();
-                            usableAtoms[currentTargetIndexXC].push_back(parkingSpotsRemainingAtCurrentIndexXC.back());
-                            parkingSpotsRemainingAtCurrentIndexXC.pop_back();
+                            insertCount++;
+                            sharedIndices.insert(*indexInOnlyLowStartRegister);
                         }
                     }
-                    std::sort(startSelectionAC->begin(), startSelectionAC->end());
-                    std::sort(endSelectionAC->begin(), endSelectionAC->end());
-
-                    if(vertical)
-                    {
-                        elbow1.rowSelection = start.rowSelection;
-                        elbow2.rowSelection = end.rowSelection;
-                    }
-                    else
-                    {
-                        elbow1.colSelection = start.colSelection;
-                        elbow2.colSelection = end.colSelection;
-                    }
-                    move.steps.push_back(std::move(start));
-                    move.steps.push_back(std::move(elbow1));
-                    move.steps.push_back(std::move(elbow2));
-                    move.steps.push_back(std::move(end));
-                    move.execute(stateArray, logger);
-                    moveList.push_back(std::move(move));
                 }
-                if(targetSites[currentTargetIndexXC].empty())
+                if(indicesInUnfilledCombinedMove + indicesInUnfilledHighMove <= maxTonesAC)
                 {
-                    if(currentTargetIndexXC < targetIndexXC)
+                    std::set<int> indicesInOnlyHighStartRegister;
+                    std::set_difference(startIndicesHighIndex.begin(), startIndicesHighIndex.end(), 
+                        startIndicesLowIndex.begin(), startIndicesLowIndex.end(),
+                        std::inserter(indicesInOnlyHighStartRegister, indicesInOnlyHighStartRegister.begin()));
+                    unsigned int insertCount = 0;
+                    for(auto indexInOnlyHighStartRegister = indicesInOnlyHighStartRegister.begin();
+                        indexInOnlyHighStartRegister != indicesInOnlyHighStartRegister.end() && 
+                        insertCount < indicesInUnfilledHighMove; 
+                        indexInOnlyHighStartRegister++)
                     {
-                        currentTargetIndexXC++;
-                        if((currentTargetIndexXC - compZoneXCStart + 1) % targetGapXC == 0)
+                        if(!excludedStartIndices.contains(*indexInOnlyHighStartRegister))
                         {
-                            parkingSpotsRemainingAtCurrentIndexXC = parkingSpotsPerSuitableIndexXC;
+                            insertCount++;
+                            sharedIndices.insert(*indexInOnlyHighStartRegister);
+                        }
+                    }
+                }
+                moveCountCombined = moveCountAddedSinglesToCombinedMove;
+            }
+            else if(moveCountSplitUnfilledCombinedMove < moveCountCombined)
+            {
+                auto endIndex = sharedIndices.begin();
+                std::advance(endIndex, sharedIndices.size() - fullCombinedMovesCount * maxTonesAC);
+                sharedIndices.erase(sharedIndices.begin(), endIndex);
+                moveCountCombined = moveCountSplitUnfilledCombinedMove;
+            }
+
+            if(moveCountSeparate <= moveCountCombined)
+            {
+                sharedIndices.clear();
+            }
+
+            std::optional<std::vector<int>::iterator> targetIndexAC = std::nullopt;
+            if(sharedTargetIndices.has_value())
+            {
+                targetIndexAC = sharedTargetIndices.value().begin();
+            }
+            auto indexAC = sharedIndices.begin();
+            while(indexAC != sharedIndices.end() && (!targetIndexAC.has_value() || 
+                targetIndexAC.value() != sharedTargetIndices.value().end()))
+            {
+                ParallelMove move;
+                ParallelMove::Step start;
+                ParallelMove::Step elbow1;
+                ParallelMove::Step elbow2;
+                std::vector<double> *startSelectionAC, *elbow1SelectionAC, *elbow2SelectionAC;
+                if(vertical)
+                {
+                    start.colSelection.push_back(indexXC[0]);
+                    start.colSelection.push_back(indexXC[1]);
+                    elbow1.colSelection.push_back((double)indexXC[0] + (double)(sortingChannelWidth + 1) / 2.);
+                    elbow1.colSelection.push_back((double)indexXC[1] - (double)(sortingChannelWidth + 1) / 2.);
+                    elbow2.colSelection = elbow1.colSelection;
+                    startSelectionAC = &start.rowSelection;
+                    elbow1SelectionAC = &elbow1.rowSelection;
+                    elbow2SelectionAC = &elbow2.rowSelection;
+                }
+                else
+                {
+                    start.rowSelection.push_back(indexXC[0]);
+                    start.rowSelection.push_back(indexXC[1]);
+                    elbow1.rowSelection.push_back((double)indexXC[0] + (double)(sortingChannelWidth + 1) / 2.);
+                    elbow1.rowSelection.push_back((double)indexXC[1] - (double)(sortingChannelWidth + 1) / 2.);
+                    elbow2.rowSelection = elbow1.rowSelection;
+                    startSelectionAC = &start.colSelection;
+                    elbow1SelectionAC = &elbow1.colSelection;
+                    elbow2SelectionAC = &elbow2.colSelection;
+                }
+                if(targetIndexAC.has_value())
+                {
+                    for(; indexAC != sharedIndices.end() && targetIndexAC.value() != sharedTargetIndices.value().end() && 
+                        startSelectionAC->size() < maxTonesAC; indexAC++, targetIndexAC.value()++)
+                    {
+                        startSelectionAC->push_back(*indexAC);
+                        elbow1SelectionAC->push_back(*indexAC);
+                        elbow2SelectionAC->push_back(*targetIndexAC.value());
+                        bool lowIndexAtom = std::erase(usableAtoms[indexXC[0]], *indexAC) > 0;
+                        bool highIndexAtom = std::erase(usableAtoms[indexXC[1]], *indexAC) > 0;
+                        std::erase(startIndicesLowIndex, *indexAC);
+                        std::erase(startIndicesHighIndex, *indexAC);
+                        if(lowIndexAtom && endIndicesLowIndex.has_value())
+                        {
+                            targetCountLowIndex--;
+                            std::erase(*endIndicesLowIndex.value(), *targetIndexAC.value());
+                        }
+                        if(highIndexAtom && endIndicesHighIndex.has_value())
+                        {
+                            targetCountHighIndex--;
+                            std::erase(*endIndicesHighIndex.value(), *targetIndexAC.value());
+                        }
+                        if(parkingMove)
+                        {
+                            if(lowIndexAtom)
+                            {
+                                usableAtoms[endIndexXCLowIndex].push_back(*targetIndexAC.value());
+                            }
+                            if(highIndexAtom)
+                            {
+                                usableAtoms[endIndexXCHighIndex].push_back(*targetIndexAC.value());
+                            }
+                        }
+                    }
+                    if(startSelectionAC->size() > 0)
+                    {
+                        if(parkingMove)
+                        {
+                            std::sort(elbow2SelectionAC->begin(), elbow2SelectionAC->end());
+                        }
+                        ParallelMove::Step end;
+                        if(vertical)
+                        {
+                            end.colSelection.push_back(endIndexXCLowIndex);
+                            end.colSelection.push_back(endIndexXCHighIndex);
+                            end.rowSelection = *elbow2SelectionAC;
                         }
                         else
                         {
-                            parkingSpotsRemainingAtCurrentIndexXC.clear();
+                            end.rowSelection.push_back(endIndexXCLowIndex);
+                            end.rowSelection.push_back(endIndexXCHighIndex);
+                            end.colSelection = *elbow2SelectionAC;
                         }
-                    }
-                    else
-                    {
-                        break;
+                        move.steps.push_back(std::move(start));
+                        move.steps.push_back(std::move(elbow1));
+                        move.steps.push_back(std::move(elbow2));
+                        move.steps.push_back(std::move(end));
+                        move.execute(stateArray, logger);
+                        moveList.push_back(std::move(move));
                     }
                 }
                 else
                 {
-                    std::vector<int>::iterator middleTargetAC, middleSourceAC;
-
-                    std::vector<int> usedSourceIndices;
-                    std::vector<int> usedTargetIndices;
-
-                    if(targetSites[currentTargetIndexXC].size() > usableAtoms[indexXC].size())
+                    int indicesLowerOrEqualMiddle = 0, indicesHigherMiddle = 0;
+                    for(; indexAC != sharedIndices.end() && startSelectionAC->size() < maxTonesAC; indexAC++)
                     {
-                        middleSourceAC = usableAtoms[indexXC].begin(); 
-                        size_t halfUsableAtomCount = usableAtoms[indexXC].size() / 2;
-                        std::advance(middleSourceAC, halfUsableAtomCount);
-                        std::vector<int>::iterator targetAC = targetSites[currentTargetIndexXC].begin();
-                        std::advance(targetAC, halfUsableAtomCount);
-                        int minDist = INT_MAX;
-
-                        for(; std::distance(targetAC, targetSites[currentTargetIndexXC].end()) >= 
-                            std::distance(middleSourceAC, usableAtoms[indexXC].end()); targetAC++)
+                        startSelectionAC->push_back(*indexAC);
+                        elbow1SelectionAC->push_back(*indexAC);
+                        std::erase(usableAtoms[indexXC[0]], *indexAC);
+                        std::erase(usableAtoms[indexXC[1]], *indexAC);
+                        std::erase(startIndicesLowIndex, *indexAC);
+                        std::erase(startIndicesHighIndex, *indexAC);
+                        if(*indexAC <= (int)arraySizeAC / 2)
                         {
-                            int distSourceToTarget = *targetAC - *middleSourceAC;
-                            if(distSourceToTarget < 0)
-                            {
-                                middleTargetAC = targetAC;
-                                minDist = -distSourceToTarget;
-                            }
-                            else
-                            {
-                                if(distSourceToTarget < minDist)
-                                {
-                                    middleTargetAC = targetAC;
-                                }
-                                break;
-                            }
+                            indicesLowerOrEqualMiddle++;
                         }
-
-                        usedSourceIndices.push_back(*middleSourceAC);
-                        usedTargetIndices.push_back(*middleTargetAC);
-
-                        auto targetACLeftwards = std::make_reverse_iterator(middleTargetAC);
-                        auto sourceACLeftwards = std::make_reverse_iterator(middleSourceAC);
-
-                        auto middleTargetACIndex = std::distance(targetSites[currentTargetIndexXC].begin(), middleTargetAC);
-                        usableAtoms[indexXC].erase(middleSourceAC);
-                        targetSites[currentTargetIndexXC].erase(middleTargetAC);
-
-                        for(; sourceACLeftwards != usableAtoms[indexXC].rend() && 
-                            targetACLeftwards != targetSites[currentTargetIndexXC].rend() && 
-                            usedSourceIndices.size() < maxTones;)
+                        else
                         {
-                            int minDist = INT_MAX;
-
-                            for(; std::distance(targetACLeftwards, targetSites[currentTargetIndexXC].rend()) > 
-                                std::distance(sourceACLeftwards, usableAtoms[indexXC].rend()); targetACLeftwards++)
-                            {
-                                int distTargetToSource = *sourceACLeftwards - *targetACLeftwards;
-                                if(distTargetToSource < 0)
-                                {
-                                    minDist = -distTargetToSource;
-                                }
-                                else
-                                {
-                                    if(distTargetToSource >= minDist)
-                                    {
-                                        targetACLeftwards--;
-                                    }
-                                    break;
-                                }
-                            }
-                            usedSourceIndices.push_back(*sourceACLeftwards);
-                            usedTargetIndices.push_back(*targetACLeftwards);
-                            usableAtoms[indexXC].erase((++sourceACLeftwards).base());
-                            targetSites[currentTargetIndexXC].erase((++targetACLeftwards).base());
-                        }
-                        
-                        middleSourceAC = usableAtoms[indexXC].begin(); 
-                        std::advance(middleSourceAC, halfUsableAtomCount + 1 - usedSourceIndices.size());
-                        middleTargetAC = targetSites[currentTargetIndexXC].begin();
-                        std::advance(middleTargetAC, middleTargetACIndex + 1 - usedTargetIndices.size());
-
-                        for(; middleSourceAC != usableAtoms[indexXC].end() && 
-                            middleTargetAC != targetSites[currentTargetIndexXC].end() && 
-                            usedSourceIndices.size() < maxTones;)
-                        {
-                            int minDist = INT_MAX;
-
-                            for(; std::distance(middleTargetAC, targetSites[currentTargetIndexXC].end()) >
-                                std::distance(middleSourceAC, usableAtoms[indexXC].end()); middleTargetAC++)
-                            {
-                                int distSourceToTarget = *middleTargetAC - *middleSourceAC;
-                                if(distSourceToTarget < 0)
-                                {
-                                    minDist = -distSourceToTarget;
-                                }
-                                else
-                                {
-                                    if(distSourceToTarget >= minDist)
-                                    {
-                                        middleTargetAC--;
-                                    }
-                                    break;
-                                }
-                            }
-                            usedSourceIndices.push_back(*middleSourceAC);
-                            usedTargetIndices.push_back(*middleTargetAC);
-                            middleSourceAC = usableAtoms[indexXC].erase(middleSourceAC);
-                            middleTargetAC = targetSites[currentTargetIndexXC].erase(middleTargetAC);
+                            indicesHigherMiddle++;
                         }
                     }
-                    else
+                    if(indicesLowerOrEqualMiddle > 0 || indicesHigherMiddle > 0)
                     {
-                        middleTargetAC = targetSites[currentTargetIndexXC].begin(); 
-                        size_t halfTargetSiteCount = targetSites[currentTargetIndexXC].size() / 2;
-                        std::advance(middleTargetAC, halfTargetSiteCount);
-                        std::vector<int>::iterator sourceAC = usableAtoms[indexXC].begin();
-                        std::advance(sourceAC, halfTargetSiteCount);
-                        int minDist = INT_MAX;
-
-                        for(; std::distance(sourceAC, usableAtoms[indexXC].end()) >=
-                            std::distance(middleTargetAC, targetSites[currentTargetIndexXC].end()); sourceAC++)
+                        for(int i = 0; i < indicesLowerOrEqualMiddle; i++)
                         {
-                            int distTargetToSource = *sourceAC - *middleTargetAC;
-                            if(distTargetToSource < 0)
-                            {
-                                middleSourceAC = sourceAC;
-                                minDist = -distTargetToSource;
-                            }
-                            else
-                            {
-                                if(distTargetToSource < minDist)
-                                {
-                                    middleSourceAC = sourceAC;
-                                }
-                                break;
-                            }
+                            elbow2SelectionAC->push_back(-indicesLowerOrEqualMiddle - targetGapAC + 1 + i);
                         }
-
-                        usedSourceIndices.push_back(*middleSourceAC);
-                        usedTargetIndices.push_back(*middleTargetAC);
-
-                        auto targetACLeftwards = std::make_reverse_iterator(middleTargetAC);
-                        auto sourceACLeftwards = std::make_reverse_iterator(middleSourceAC);
-
-                        auto middleSourceACIndex = std::distance(usableAtoms[indexXC].begin(), middleSourceAC);
-                        usableAtoms[indexXC].erase(middleSourceAC);
-                        targetSites[currentTargetIndexXC].erase(middleTargetAC);
-
-                        for(; sourceACLeftwards != usableAtoms[indexXC].rend() && 
-                            targetACLeftwards != targetSites[currentTargetIndexXC].rend() && 
-                            usedSourceIndices.size() < maxTones;)
+                        for(int i = 0; i < indicesHigherMiddle; i++)
                         {
-                            int minDist = INT_MAX;
-
-                            if(currentTargetIndexXC < targetIndexXC)
-                            {
-                                for(; std::distance(sourceACLeftwards, usableAtoms[indexXC].rend()) > 
-                                    std::distance(targetACLeftwards, targetSites[currentTargetIndexXC].rend()); sourceACLeftwards++)
-                                {
-                                    int distSourceToTarget = *targetACLeftwards - *sourceACLeftwards;
-                                    if(distSourceToTarget < 0)
-                                    {
-                                        minDist = -distSourceToTarget;
-                                    }
-                                    else
-                                    {
-                                        if(distSourceToTarget >= minDist)
-                                        {
-                                            sourceACLeftwards--;
-                                        }
-                                        break;
-                                    }
-                                }
-                            }
-                            usedSourceIndices.push_back(*sourceACLeftwards);
-                            usedTargetIndices.push_back(*targetACLeftwards);
-                            usableAtoms[indexXC].erase((++sourceACLeftwards).base());
-                            targetSites[currentTargetIndexXC].erase((++targetACLeftwards).base());
+                            elbow2SelectionAC->push_back(arraySizeAC + targetGapAC - 1 + i);
                         }
-                        
-                        middleSourceAC = usableAtoms[indexXC].begin(); 
-                        std::advance(middleSourceAC, middleSourceACIndex + 1 - usedSourceIndices.size());
-                        middleTargetAC = targetSites[currentTargetIndexXC].begin();
-                        std::advance(middleTargetAC, halfTargetSiteCount + 1 - usedTargetIndices.size());
-
-                        for(; middleSourceAC != usableAtoms[indexXC].end() && middleTargetAC != targetSites[currentTargetIndexXC].end() && 
-                            usedSourceIndices.size() < maxTones;)
-                        {
-                            int minDist = INT_MAX;
-
-                            if(currentTargetIndexXC < targetIndexXC)
-                            {
-                                for(; std::distance(middleSourceAC, usableAtoms[indexXC].end()) > 
-                                    std::distance(middleTargetAC, targetSites[currentTargetIndexXC].end()); middleSourceAC++)
-                                {
-                                    int distTargetToSource = *middleSourceAC - *middleTargetAC;
-                                    if(distTargetToSource < 0)
-                                    {
-                                        minDist = -distTargetToSource;
-                                    }
-                                    else
-                                    {
-                                        if(distTargetToSource >= minDist)
-                                        {
-                                            middleSourceAC--;
-                                        }
-                                        break;
-                                    }
-                                }
-                            }
-                            usedSourceIndices.push_back(*middleSourceAC);
-                            usedTargetIndices.push_back(*middleTargetAC);
-                            middleSourceAC = usableAtoms[indexXC].erase(middleSourceAC);
-                            middleTargetAC = targetSites[currentTargetIndexXC].erase(middleTargetAC);
-                        }
+                        move.steps.push_back(std::move(start));
+                        move.steps.push_back(std::move(elbow1));
+                        move.steps.push_back(std::move(elbow2));
+                        move.execute(stateArray, logger);
+                        moveList.push_back(std::move(move));
                     }
-
-                    std::sort(usedSourceIndices.begin(), usedSourceIndices.end());
-                    std::sort(usedTargetIndices.begin(), usedTargetIndices.end());
-
-                    requiredAtoms -= usedSourceIndices.size();
-                    totalRequiredAtoms -= usedSourceIndices.size();
-
-                    ParallelMove move;
-                    ParallelMove::Step start, elbow1, elbow2, end;
-                    std::vector<double> *startSelectionAC, *endSelectionAC;
-                    if(vertical)
-                    {
-                        start.colSelection.push_back(indexXC);
-                        elbow1.colSelection.push_back((double)indexXC - (double)(sortingChannelWidth + 1) / 2.);
-                        elbow2.colSelection.push_back((double)indexXC - (double)(sortingChannelWidth + 1) / 2.);
-                        end.colSelection.push_back(currentTargetIndexXC);
-                        startSelectionAC = &start.rowSelection;
-                        endSelectionAC = &end.rowSelection;
-                    }
-                    else
-                    {
-                        start.rowSelection.push_back(indexXC);
-                        elbow1.rowSelection.push_back((double)indexXC - (double)(sortingChannelWidth + 1) / 2.);
-                        elbow2.rowSelection.push_back((double)indexXC - (double)(sortingChannelWidth + 1) / 2.);
-                        end.rowSelection.push_back(currentTargetIndexXC);
-                        startSelectionAC = &start.colSelection;
-                        endSelectionAC = &end.colSelection;
-                    }
-                    for(int sourceIndexAC : usedSourceIndices)
-                    {
-                        startSelectionAC->push_back(sourceIndexAC);
-                    }
-                    for(int targetIndexAC : usedTargetIndices)
-                    {
-                        endSelectionAC->push_back(targetIndexAC);
-                    }
-                    if(vertical)
-                    {
-                        elbow1.rowSelection = start.rowSelection;
-                        elbow2.rowSelection = end.rowSelection;
-                    }
-                    else
-                    {
-                        elbow1.colSelection = start.colSelection;
-                        elbow2.colSelection = end.colSelection;
-                    }
-                    move.steps.push_back(std::move(start));
-                    move.steps.push_back(std::move(elbow1));
-                    move.steps.push_back(std::move(elbow2));
-                    move.steps.push_back(std::move(end));
-                    move.execute(stateArray, logger);
-                    moveList.push_back(std::move(move));
                 }
             }
         }
+    }
+
+    // For remaining indices, create individual moves
+    if(indexXC[0] >= 0)
+    {
+        if(!createSingleIndexMoves(stateArray, vertical, moveList, startIndicesLowIndex, -1, 
+            endIndicesLowIndex, endIndexXCLowIndex, 
+            targetCountLowIndex, arraySizeXC, arraySizeAC, sortingChannelWidth, 
+            indexXC[0], targetGapAC, maxTonesXC, maxTonesAC, spacingXC,
+            usableAtoms, parkingMove, logger))
+        {
+            return false;
+        }
+    }
+    if(indexXC[1] < arraySizeXC)
+    {
+        if(!createSingleIndexMoves(stateArray, vertical, moveList, startIndicesHighIndex, 1, 
+            endIndicesHighIndex, endIndexXCHighIndex, 
+            targetCountHighIndex, arraySizeXC, arraySizeAC, sortingChannelWidth, 
+            indexXC[1], targetGapAC, maxTonesXC, maxTonesAC, spacingXC,
+            usableAtoms, parkingMove, logger))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool sortRemainingRowsOrCols(ArrayAccessor& stateArray, int startIndex,
+    bool vertical, unsigned int sortingChannelWidth, std::vector<ParallelMove>& moveList, unsigned int arraySizeAC, 
+    unsigned int arraySizeXC, unsigned int maxTonesXC, unsigned int maxTonesAC, double spacingXC, std::vector<std::vector<int>>& usableAtoms, 
+    std::vector<std::vector<int>>& unusableAtoms, std::vector<std::vector<int>>& targetSites, 
+    size_t compZoneXCStart, size_t compZoneXCEnd, size_t compZoneACStart, size_t compZoneACEnd,
+    int targetGapXC, int targetGapAC, std::shared_ptr<spdlog::logger> logger)
+{
+    std::vector<int> parkingSpotsPerSuitableIndexXC;
+    for(int dist = targetGapAC; dist < (int)compZoneACStart || compZoneACEnd - 1 + dist < arraySizeAC; dist += targetGapAC)
+    {
+        if((int)compZoneACStart - dist > 0)
+        {
+            parkingSpotsPerSuitableIndexXC.push_back(compZoneACStart - dist);
+        }
+        if(compZoneACEnd - 1 + dist < arraySizeAC)
+        {
+            parkingSpotsPerSuitableIndexXC.push_back(compZoneACEnd - 1 + dist);
+        }
+    }
+    
+    // If sorting channel starts in the middle, there are two indices: one going up and one down, 
+    // [0] means index is decreasing, [1] means increasing
+    int indexXC[2], currentTargetIndexXC[2];
+    if(startIndex == 0)
+    {
+        indexXC[0] = -1;
+        indexXC[1] = sortingChannelWidth + 1;
+        currentTargetIndexXC[0] = -1;
+        currentTargetIndexXC[1] = compZoneXCStart;
+    }
+    else if(startIndex == (int)arraySizeXC)
+    {
+        indexXC[0] = arraySizeXC;
+        indexXC[1] = arraySizeXC - sortingChannelWidth - 2;
+        currentTargetIndexXC[0] = arraySizeXC;
+        currentTargetIndexXC[1] = compZoneXCEnd - 1;
+    }
+    else
+    {
+        indexXC[0] = startIndex - sortingChannelWidth - 2;
+        indexXC[1] = startIndex + sortingChannelWidth + 1;
+        currentTargetIndexXC[0] = startIndex - 1;
+        currentTargetIndexXC[1] = startIndex;
+    }
+    unsigned int requiredAtoms[2] = {0, 0};
+    std::vector<int> parkingSpotsRemainingAtCurrentIndexXC[2];
+    for(size_t i = 0; i < 2; i++)
+    {
+        if((currentTargetIndexXC[i] - compZoneXCStart - 1 + targetGapXC) % targetGapXC == 0)
+        {
+            parkingSpotsRemainingAtCurrentIndexXC[i] = parkingSpotsPerSuitableIndexXC;
+        }
+    }
+    int dir[2] = {-1, 1};
+
+    unsigned int totalRequiredAtoms = std::accumulate(targetSites.begin(), targetSites.end(), 0u, 
+        [](unsigned int init, const auto& elem) { return init + elem.size(); });
+    size_t targetSitesInCurrentTarget[2] = {0,0};
+    if(currentTargetIndexXC[0] >= 0 && currentTargetIndexXC[0] < (int)targetSites.size())
+    {
+        targetSitesInCurrentTarget[0] = targetSites[currentTargetIndexXC[0]].size();
+    }
+    if(currentTargetIndexXC[1] >= 0 && currentTargetIndexXC[1] < (int)targetSites.size())
+    {
+        targetSitesInCurrentTarget[1] = targetSites[currentTargetIndexXC[1]].size();
+    }
+
+    while(indexXC[0] >= 0 || indexXC[1] < (int)arraySizeXC)
+    {
+        logger->debug("indexXC[0]: {}, indexXC[1]: {}", indexXC[0], indexXC[1]);
+        std::stringstream unusableAtomsStr;
+        if(indexXC[0] >= 0 && indexXC[0] < unusableAtoms.size())
+        {
+            unusableAtomsStr << "unusableAtoms[indexXC[0]]: ";
+            for(auto unusableAtom : unusableAtoms[indexXC[0]])
+            {
+                unusableAtomsStr << unusableAtom << ", ";
+            }
+            unusableAtomsStr << "\nusableAtoms[indexXC[0]]: ";
+            for(auto usableAtom : usableAtoms[indexXC[0]])
+            {
+                unusableAtomsStr << usableAtom << ", ";
+            }
+        }
+        if(indexXC[1] >= 0 && indexXC[1] < unusableAtoms.size())
+        {
+            unusableAtomsStr << "\nunusableAtoms[indexXC[1]]: ";
+            for(auto unusableAtom : unusableAtoms[indexXC[1]])
+            {
+                unusableAtomsStr << unusableAtom << ", ";
+            }
+            unusableAtomsStr << "\nusableAtoms[indexXC[1]]: ";
+            for(auto usableAtom : usableAtoms[indexXC[1]])
+            {
+                unusableAtomsStr << usableAtom << ", ";
+            }
+        }
+        logger->debug(unusableAtomsStr.str());
+
+        if(indexXC[0] < (int)compZoneXCStart && indexXC[1] >= (int)compZoneXCEnd && totalRequiredAtoms == 0)
+        {
+            // If both indices are outside computational zone and we don't need more atoms, then we are done
+            return true;
+        }
+        size_t targetIndexXC[2];
+        unsigned int parkingSpots[2];
+        std::set<int> excludedIndicesForRemovalAndParkingMoves;
+        for(size_t i = 0; i < 2; i++)
+        {
+            if(indexXC[i] >= 0 && indexXC[i] < (int)arraySizeXC)
+            {
+                targetIndexXC[i] = indexXC[i] - dir[i] * (sortingChannelWidth + 1);
+                requiredAtoms[i] = targetSites[currentTargetIndexXC[i]].size();
+                parkingSpots[i] = parkingSpotsRemainingAtCurrentIndexXC[i].size();
+
+                for(int indexXCTowardsLastTargetIndex = currentTargetIndexXC[i] + dir[i]; 
+                    indexXCTowardsLastTargetIndex * dir[i] <= (int)targetIndexXC[i] * dir[i]; 
+                    indexXCTowardsLastTargetIndex += dir[i])
+                {
+                    requiredAtoms[i] += targetSites[indexXCTowardsLastTargetIndex].size();
+                    if((indexXCTowardsLastTargetIndex - compZoneXCStart - 1 + targetGapXC) % targetGapXC == 0)
+                    {
+                        parkingSpots[i] += parkingSpotsPerSuitableIndexXC.size();
+                    }
+                }
+                logger->debug("i: {}, indexXC: {}, requiredAtoms: {}, totalRequiredAtoms: {}, parkingSpots: {}", 
+                    i, indexXC[i], requiredAtoms[i], totalRequiredAtoms, parkingSpots[i]);
+
+                // Excess atoms that cannot be used for filling target sites or parking spots are thrown away
+                if(targetIndexXC[i] >= compZoneXCStart && targetIndexXC[i] < compZoneXCEnd)
+                {
+                    while(usableAtoms[indexXC[i]].size() > requiredAtoms[i] + parkingSpots[i])
+                    {
+                        if(usableAtoms[indexXC[i]][0] > (int)arraySizeAC - usableAtoms[indexXC[i]].back() - 1)
+                        {
+                            unusableAtoms[indexXC[i]].insert(std::upper_bound(unusableAtoms[indexXC[i]].begin(), 
+                                unusableAtoms[indexXC[i]].end(), usableAtoms[indexXC[i]][0]), usableAtoms[indexXC[i]][0]);
+                            usableAtoms[indexXC[i]].erase(usableAtoms[indexXC[i]].begin());
+                        }
+                        else
+                        {
+                            unusableAtoms[indexXC[i]].insert(std::upper_bound(unusableAtoms[indexXC[i]].begin(), 
+                                unusableAtoms[indexXC[i]].end(), usableAtoms[indexXC[i]].back()), usableAtoms[indexXC[i]].back());
+                            usableAtoms[indexXC[i]].pop_back();
+                        }
+                    }
+                }
+
+                for(const auto& usableIndex : usableAtoms[indexXC[i]])
+                {
+                    for(int excludedIndex = usableIndex - targetGapAC + 1; excludedIndex < usableIndex + targetGapAC; excludedIndex++)
+                    {
+                        excludedIndicesForRemovalAndParkingMoves.insert(excludedIndex);
+                    }
+                }
+            }
+        }
+        
+        // Remove unusable atoms
+        if(indexXC[0] >= 0 && indexXC[1] < (int)arraySizeXC)
+        {
+            if(!createCombinedMoves(stateArray, vertical, moveList, excludedIndicesForRemovalAndParkingMoves, 
+                unusableAtoms[indexXC[0]], unusableAtoms[indexXC[1]], 
+                std::nullopt, 0, std::nullopt, 0, unusableAtoms[indexXC[0]].size(), 
+                unusableAtoms[indexXC[1]].size(), arraySizeXC, arraySizeAC, sortingChannelWidth, 
+                indexXC, targetGapAC, maxTonesXC, maxTonesAC, spacingXC, usableAtoms, false, logger))
+            {
+                return false;
+            }
+        }
+        else if(indexXC[0] >= 0)
+        {
+            if(!createSingleIndexMoves(stateArray, vertical, moveList, unusableAtoms[indexXC[0]], -1, 
+                std::nullopt, 0, unusableAtoms[indexXC[0]].size(), 
+                arraySizeXC, arraySizeAC, sortingChannelWidth, 
+                indexXC[0], targetGapAC, maxTonesXC, maxTonesAC, spacingXC, usableAtoms, false, logger))
+            {
+                return false;
+            }
+        }
+        else if(indexXC[1] < (int)arraySizeXC)
+        {
+            if(!createSingleIndexMoves(stateArray, vertical, moveList, unusableAtoms[indexXC[1]], 1, 
+                std::nullopt, 0, unusableAtoms[indexXC[1]].size(), 
+                arraySizeXC, arraySizeAC, sortingChannelWidth, 
+                indexXC[1], targetGapAC, maxTonesXC, maxTonesAC, spacingXC, usableAtoms, false, logger))
+            {
+                return false;
+            }
+        };
+
+        while((indexXC[0] >= 0 && !usableAtoms[indexXC[0]].empty()) || 
+            (indexXC[1] < (int)arraySizeXC && !usableAtoms[indexXC[1]].empty()))
+        {
+            bool lowIndexContainsAtoms = indexXC[0] >= 0 && !usableAtoms[indexXC[0]].empty();
+            bool highIndexContainsAtoms = indexXC[1] < (int)arraySizeXC && !usableAtoms[indexXC[1]].empty();
+            // If there are too many atoms to use, move excess atoms to parking spots
+            if(lowIndexContainsAtoms && highIndexContainsAtoms)
+            {
+                unsigned int atomsToParkLowIndex = usableAtoms[indexXC[0]].size() > requiredAtoms[0] ? 
+                    usableAtoms[indexXC[0]].size() - requiredAtoms[0] : 0;
+                unsigned int atomsToParkHighIndex = usableAtoms[indexXC[1]].size() > requiredAtoms[1] ? 
+                    usableAtoms[indexXC[1]].size() - requiredAtoms[1] : 0;
+                if(atomsToParkLowIndex > 0 || atomsToParkHighIndex > 0)
+                {
+                    logger->debug("Parking {} and {} atoms", atomsToParkLowIndex, atomsToParkHighIndex);
+                    if(!createCombinedMoves(stateArray, vertical, moveList, excludedIndicesForRemovalAndParkingMoves,
+                        usableAtoms[indexXC[0]], usableAtoms[indexXC[1]], 
+                        &parkingSpotsRemainingAtCurrentIndexXC[0], currentTargetIndexXC[0], 
+                        &parkingSpotsRemainingAtCurrentIndexXC[1], currentTargetIndexXC[1],
+                        atomsToParkLowIndex, atomsToParkHighIndex, arraySizeXC, arraySizeAC, sortingChannelWidth, 
+                        indexXC, targetGapAC, maxTonesXC, maxTonesAC, spacingXC, usableAtoms, true, logger))
+                    {
+                        return false;
+                    }
+                }
+            }
+            else if(lowIndexContainsAtoms)
+            {
+                unsigned int atomsToParkLowIndex = usableAtoms[indexXC[0]].size() > requiredAtoms[0] ? 
+                    usableAtoms[indexXC[0]].size() - requiredAtoms[0] : 0;
+                if(atomsToParkLowIndex > 0)
+                {
+                    logger->debug("Parking {} atoms", atomsToParkLowIndex);
+                    if(!createSingleIndexMoves(stateArray, vertical, moveList, usableAtoms[indexXC[0]], -1, 
+                        &parkingSpotsRemainingAtCurrentIndexXC[0], currentTargetIndexXC[0], 
+                        atomsToParkLowIndex, arraySizeXC, arraySizeAC, sortingChannelWidth, 
+                        indexXC[0], targetGapAC, maxTonesXC, maxTonesAC, spacingXC, usableAtoms, true, logger))
+                    {
+                        return false;
+                    }
+                }
+            }
+            else if(highIndexContainsAtoms)
+            {
+                unsigned int atomsToParkHighIndex = usableAtoms[indexXC[1]].size() > requiredAtoms[1] ?
+                    usableAtoms[indexXC[1]].size() - requiredAtoms[1] : 0;
+                if(atomsToParkHighIndex > 0)
+                {
+                    logger->debug("Parking {} atoms", atomsToParkHighIndex);
+                    if(!createSingleIndexMoves(stateArray, vertical, moveList, usableAtoms[indexXC[1]], 1, 
+                        &parkingSpotsRemainingAtCurrentIndexXC[1], currentTargetIndexXC[1], 
+                        atomsToParkHighIndex, arraySizeXC, arraySizeAC, sortingChannelWidth, 
+                        indexXC[1], targetGapAC, maxTonesXC, maxTonesAC, spacingXC, usableAtoms, true, logger))
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            // Increase row if there are no target sites
+            bool atLeastOneWasMoved = false;
+            bool lowIndexSideExists = indexXC[0] >= 0 && indexXC[0] < (int)arraySizeXC && 
+                currentTargetIndexXC[0] >= 0 && currentTargetIndexXC[0] < (int)targetSites.size();
+            bool highIndexSideExists = indexXC[1] >= 0 && indexXC[1] < (int)arraySizeXC && 
+                currentTargetIndexXC[1] >= 0 && currentTargetIndexXC[1] < (int)targetSites.size();
+
+            if(lowIndexSideExists && targetSites[currentTargetIndexXC[0]].empty())
+            {
+                totalRequiredAtoms -= targetSitesInCurrentTarget[0];
+                targetSitesInCurrentTarget[0] = 0;
+
+                if(currentTargetIndexXC[0] > (int)targetIndexXC[0] && currentTargetIndexXC[0] > 0)
+                {
+                    atLeastOneWasMoved = true;
+                    currentTargetIndexXC[0]--;
+                    if((currentTargetIndexXC[0] - compZoneXCStart + 1) % targetGapXC == 0)
+                    {
+                        parkingSpotsRemainingAtCurrentIndexXC[0] = parkingSpotsPerSuitableIndexXC;
+                    }
+                    else
+                    {
+                        parkingSpotsRemainingAtCurrentIndexXC[0].clear();
+                    }
+
+                    targetSitesInCurrentTarget[0] = targetSites[currentTargetIndexXC[0]].size();
+                }
+            }
+
+            if(highIndexSideExists && targetSites[currentTargetIndexXC[1]].empty())
+            {
+                totalRequiredAtoms -= targetSitesInCurrentTarget[1];
+                targetSitesInCurrentTarget[1] = 0;
+
+                if(currentTargetIndexXC[1] < (int)targetIndexXC[1] && currentTargetIndexXC[1] < (int)targetSites.size() - 1)
+                {
+                    atLeastOneWasMoved = true;
+                    currentTargetIndexXC[1]++;
+                    if((currentTargetIndexXC[1] - compZoneXCStart + 1) % targetGapXC == 0)
+                    {
+                        parkingSpotsRemainingAtCurrentIndexXC[1] = parkingSpotsPerSuitableIndexXC;
+                    }
+                    else
+                    {
+                        parkingSpotsRemainingAtCurrentIndexXC[1].clear();
+                    }
+
+                    targetSitesInCurrentTarget[1] = targetSites[currentTargetIndexXC[1]].size();
+                }
+            }
+
+            if((!lowIndexSideExists || targetSites[currentTargetIndexXC[0]].empty()) &&
+                (!highIndexSideExists || targetSites[currentTargetIndexXC[1]].empty()) && !atLeastOneWasMoved)
+            {
+                logger->debug("Breaking out of loop as there are no more targets and target can't be moved");
+                break;
+            }
+            
+            if(!atLeastOneWasMoved)
+            {
+                excludedIndicesForRemovalAndParkingMoves.clear();
+
+                if(lowIndexContainsAtoms && highIndexContainsAtoms)
+                {
+                    if(!createCombinedMoves(stateArray, vertical, moveList, excludedIndicesForRemovalAndParkingMoves, 
+                        usableAtoms[indexXC[0]], usableAtoms[indexXC[1]], 
+                        &targetSites[currentTargetIndexXC[0]], currentTargetIndexXC[0], 
+                        &targetSites[currentTargetIndexXC[1]], currentTargetIndexXC[1],
+                        usableAtoms[indexXC[0]].size(), usableAtoms[indexXC[1]].size(), 
+                        arraySizeXC, arraySizeAC, sortingChannelWidth, 
+                        indexXC, targetGapAC, maxTonesXC, maxTonesAC, spacingXC, usableAtoms, false, logger))
+                    {
+                        return false;
+                    }
+                }
+                else if(lowIndexContainsAtoms)
+                {
+                    if(!createSingleIndexMoves(stateArray, vertical, moveList, usableAtoms[indexXC[0]], -1, 
+                        &targetSites[currentTargetIndexXC[0]], currentTargetIndexXC[0], 
+                        usableAtoms[indexXC[0]].size(), arraySizeXC, arraySizeAC, sortingChannelWidth, 
+                        indexXC[0], targetGapAC, maxTonesXC, maxTonesAC, spacingXC, usableAtoms, false, logger))
+                    {
+                        return false;
+                    }
+                }
+                else if(highIndexContainsAtoms)
+                {
+                    if(!createSingleIndexMoves(stateArray, vertical, moveList, usableAtoms[indexXC[1]], 1, 
+                        &targetSites[currentTargetIndexXC[1]], currentTargetIndexXC[1], 
+                        usableAtoms[indexXC[1]].size(), arraySizeXC, arraySizeAC, sortingChannelWidth, 
+                        indexXC[1], targetGapAC, maxTonesXC, maxTonesAC, spacingXC, usableAtoms, false, logger))
+                    {
+                        return false;
+                    }
+                }
+
+                // We need to fill this set again as there may be fewer usable atoms
+                for(unsigned int side : {0,1})
+                {
+                    if(indexXC[side] >= 0 && indexXC[side] < (int)arraySizeXC)
+                    {
+                        for(const auto& usableIndex : usableAtoms[indexXC[side]])
+                        {
+                            for(int excludedIndex = usableIndex - targetGapAC + 1; 
+                                excludedIndex < usableIndex + targetGapAC; excludedIndex++)
+                            {
+                                excludedIndicesForRemovalAndParkingMoves.insert(excludedIndex);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        indexXC[0]--;
+        indexXC[1]++;
     }
 
     return totalRequiredAtoms == 0;
 }
 
 std::tuple<std::vector<std::vector<int>>,std::vector<std::vector<int>>,std::vector<std::vector<int>>> 
-    findUnusableAtoms(StateArrayAccessor& stateArray, bool vertical, unsigned int arraySizeXC,
+    findUnusableAtoms(ArrayAccessor& stateArray, bool vertical, unsigned int arraySizeXC, unsigned int arraySizeAC,
     size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd, 
-    py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &targetGeometry)
+    ArrayAccessor& targetGeometry)
 {
+    // Create mask where true existing atoms would prevent an atoms usability
     auto usabilityPreventingNeighborhoodMask = generateMask(MIN_DIST_FROM_OCC_SITES);
     int usabilityPreventingNeighborhoodMaskRowDist = usabilityPreventingNeighborhoodMask.rows() / 2;
     int usabilityPreventingNeighborhoodMaskColDist = usabilityPreventingNeighborhoodMask.cols() / 2;
@@ -660,21 +1350,18 @@ std::tuple<std::vector<std::vector<int>>,std::vector<std::vector<int>>,std::vect
     usableAtoms.resize(arraySizeXC);
     targetSites.resize(arraySizeXC);
 
-    for(size_t row = 0; row < stateArray.rows(); row++)
+    // Iterate over array, check for usability-preventing neighbors, and sort into structure accordingly
+    for(size_t indexXC = 0; indexXC < arraySizeXC; indexXC++)
     {
-        for(size_t col = 0; col < stateArray.cols(); col++)
+        for(size_t indexAC = 0; indexAC < arraySizeAC; indexAC++)
         {
+            size_t row = vertical ? indexAC : indexXC;
+            size_t col = vertical ? indexXC : indexAC;
+
             if(row >= compZoneRowStart && row < compZoneRowEnd && col >= compZoneColStart && 
                 col < compZoneColEnd && targetGeometry(row - compZoneRowStart, col - compZoneColStart))
             {
-                if(vertical)
-                {
-                    targetSites[col].push_back(row);
-                }
-                else
-                {
-                    targetSites[row].push_back(col);
-                }
+                targetSites[indexXC].push_back(indexAC);
             }
             if(stateArray(row,col))
             {
@@ -702,25 +1389,11 @@ std::tuple<std::vector<std::vector<int>>,std::vector<std::vector<int>>,std::vect
                 }
                 if(usable)
                 {
-                    if(vertical)
-                    {
-                        usableAtoms[col].push_back(row);
-                    }
-                    else
-                    {
-                        usableAtoms[row].push_back(col);
-                    }
+                    usableAtoms[indexXC].push_back(indexAC);
                 }
                 else
                 {
-                    if(vertical)
-                    {
-                        unusableAtoms[col].push_back(row);
-                    }
-                    else
-                    {
-                        unusableAtoms[row].push_back(col);
-                    }
+                    unusableAtoms[indexXC].push_back(indexAC);
                 }
             }
         }
@@ -729,104 +1402,147 @@ std::tuple<std::vector<std::vector<int>>,std::vector<std::vector<int>>,std::vect
     return std::tuple(std::move(usableAtoms), std::move(unusableAtoms), std::move(targetSites));
 }
 
-bool resolveSortingDeficiencies(StateArrayAccessor& stateArray,
+// Move atoms from parking spots to empty target sites
+bool resolveSortingDeficiencies(ArrayAccessor& stateArray, int startIndex,
     bool vertical, unsigned int sortingChannelWidth, std::vector<ParallelMove>& moveList, unsigned int arraySizeAC, 
     unsigned int arraySizeXC, unsigned int maxTones, double spacingXC, std::vector<std::vector<int>>& usableAtoms, 
     std::vector<std::vector<int>>& unusableAtoms, std::vector<std::vector<int>>& targetSites, 
     size_t compZoneXCStart, size_t compZoneXCEnd, size_t compZoneACStart, size_t compZoneACEnd,
     int targetGapXC, int targetGapAC, std::shared_ptr<spdlog::logger> logger)
-{
-    size_t lastIndexXCWithUsableAtoms = arraySizeXC - 1;
-    for(size_t targetIndexXC = 0; targetIndexXC < arraySizeXC; targetIndexXC++)
+{    
+    for(int i = 0; i < 2; i++)
     {
-        while(!targetSites[targetIndexXC].empty())
+        if((i == 0 && startIndex < (int)arraySizeXC) || (i == 1 && startIndex > 0))
         {
-            while(usableAtoms[lastIndexXCWithUsableAtoms].empty())
+            int lastIndexXCToPossiblyContainsAtoms, targetIndexXC, lastTargetIndexXCExclusive, 
+                targetIndexXCDir, lastIndexXCWithUsableAtoms;
+            if(i == 0)
             {
-                if(lastIndexXCWithUsableAtoms == 0)
+                lastIndexXCWithUsableAtoms = arraySizeXC - 1;
+                lastIndexXCToPossiblyContainsAtoms = 0;
+                targetIndexXC = startIndex;
+                lastTargetIndexXCExclusive = arraySizeXC;
+                targetIndexXCDir = 1;
+            }
+            else
+            {
+                lastIndexXCWithUsableAtoms = 0;
+                lastIndexXCToPossiblyContainsAtoms = arraySizeXC - 1;
+                targetIndexXC = startIndex - 1;
+                lastTargetIndexXCExclusive = -1;
+                targetIndexXCDir = -1;
+            }
+            for(; targetIndexXC != lastTargetIndexXCExclusive; targetIndexXC += targetIndexXCDir)
+            {
+                while(!targetSites[targetIndexXC].empty())
                 {
-                    return false;
-                }
-                lastIndexXCWithUsableAtoms--;
-            }
-            double channelIndexXC = targetIndexXC > lastIndexXCWithUsableAtoms ? targetIndexXC : lastIndexXCWithUsableAtoms;
-            channelIndexXC += (double)(sortingChannelWidth + 1) / 2.;
+                    while(usableAtoms[lastIndexXCWithUsableAtoms].empty())
+                    {
+                        if(lastIndexXCWithUsableAtoms == lastIndexXCToPossiblyContainsAtoms)
+                        {
+                            return false;
+                        }
+                        lastIndexXCWithUsableAtoms -= targetIndexXCDir;
+                    }
 
-            ParallelMove move;
-            ParallelMove::Step start, elbow1, elbow2, end;
-            std::vector<double> *startSelectionAC, *endSelectionAC;
-            if(vertical)
-            {
-                start.colSelection.push_back(lastIndexXCWithUsableAtoms);
-                elbow1.colSelection.push_back(channelIndexXC);
-                elbow2.colSelection.push_back(channelIndexXC);
-                end.colSelection.push_back(targetIndexXC);
-                startSelectionAC = &start.rowSelection;
-                endSelectionAC = &end.rowSelection;
+                    logger->debug("indexXC: {}", lastIndexXCWithUsableAtoms);
+                    std::stringstream unusableAtomsStr;
+                    unusableAtomsStr << "usableAtoms[lastIndexXCWithUsableAtoms]: ";
+                    for(auto usableAtom : usableAtoms[lastIndexXCWithUsableAtoms])
+                    {
+                        unusableAtomsStr << usableAtom << ", ";
+                    }
+                    logger->debug(unusableAtomsStr.str());
+
+                    double channelIndexXC = (targetIndexXC * targetIndexXCDir > 
+                        lastIndexXCWithUsableAtoms * targetIndexXCDir) ? 
+                        targetIndexXC : lastIndexXCWithUsableAtoms;
+                    channelIndexXC += (double)(sortingChannelWidth + 1) / 2. * (double)targetIndexXCDir;
+
+                    ParallelMove move;
+                    ParallelMove::Step start, elbow1, elbow2, end;
+                    std::vector<double> *startSelectionAC, *endSelectionAC;
+                    if(vertical)
+                    {
+                        start.colSelection.push_back(lastIndexXCWithUsableAtoms);
+                        elbow1.colSelection.push_back(channelIndexXC);
+                        elbow2.colSelection.push_back(channelIndexXC);
+                        end.colSelection.push_back(targetIndexXC);
+                        startSelectionAC = &start.rowSelection;
+                        endSelectionAC = &end.rowSelection;
+                    }
+                    else
+                    {
+                        start.rowSelection.push_back(lastIndexXCWithUsableAtoms);
+                        elbow1.rowSelection.push_back(channelIndexXC);
+                        elbow2.rowSelection.push_back(channelIndexXC);
+                        end.rowSelection.push_back(targetIndexXC);
+                        startSelectionAC = &start.colSelection;
+                        endSelectionAC = &end.colSelection;
+                    }
+                    unsigned int count = targetSites[targetIndexXC].size() < 
+                        usableAtoms[lastIndexXCWithUsableAtoms].size() ? 
+                        targetSites[targetIndexXC].size() : usableAtoms[lastIndexXCWithUsableAtoms].size();
+                    if(count > maxTones)
+                    {
+                        count = maxTones;
+                    }
+                    for(size_t i = 0; i < count; i++)
+                    {
+                        startSelectionAC->push_back(usableAtoms[lastIndexXCWithUsableAtoms].back());
+                        endSelectionAC->push_back(targetSites[targetIndexXC].back());
+                        usableAtoms[lastIndexXCWithUsableAtoms].pop_back();
+                        targetSites[targetIndexXC].pop_back();
+                    }
+                    std::sort(startSelectionAC->begin(), startSelectionAC->end());
+                    std::sort(endSelectionAC->begin(), endSelectionAC->end());
+                    if(vertical)
+                    {
+                        elbow1.rowSelection = start.rowSelection;
+                        elbow2.rowSelection = end.rowSelection;
+                    }
+                    else
+                    {
+                        elbow1.colSelection = start.colSelection;
+                        elbow2.colSelection = end.colSelection;
+                    }
+                    move.steps.push_back(std::move(start));
+                    move.steps.push_back(std::move(elbow1));
+                    move.steps.push_back(std::move(elbow2));
+                    move.steps.push_back(std::move(end));
+                    move.execute(stateArray, logger);
+                    moveList.push_back(std::move(move));
+                }
             }
-            else
-            {
-                start.rowSelection.push_back(lastIndexXCWithUsableAtoms);
-                elbow1.rowSelection.push_back(channelIndexXC);
-                elbow2.rowSelection.push_back(channelIndexXC);
-                end.rowSelection.push_back(targetIndexXC);
-                startSelectionAC = &start.colSelection;
-                endSelectionAC = &end.colSelection;
-            }
-            unsigned int count = targetSites[targetIndexXC].size() < usableAtoms[lastIndexXCWithUsableAtoms].size() ? 
-                targetSites[targetIndexXC].size() : usableAtoms[lastIndexXCWithUsableAtoms].size();
-            if(count > maxTones)
-            {
-                count = maxTones;
-            }
-            for(size_t i = 0; i < count; i++)
-            {
-                startSelectionAC->push_back(usableAtoms[lastIndexXCWithUsableAtoms].back());
-                endSelectionAC->push_back(targetSites[targetIndexXC].back());
-                usableAtoms[lastIndexXCWithUsableAtoms].pop_back();
-                targetSites[targetIndexXC].pop_back();
-            }
-            std::sort(startSelectionAC->begin(), startSelectionAC->end());
-            std::sort(endSelectionAC->begin(), endSelectionAC->end());
-            if(vertical)
-            {
-                elbow1.rowSelection = start.rowSelection;
-                elbow2.rowSelection = end.rowSelection;
-            }
-            else
-            {
-                elbow1.colSelection = start.colSelection;
-                elbow2.colSelection = end.colSelection;
-            }
-            move.steps.push_back(std::move(start));
-            move.steps.push_back(std::move(elbow1));
-            move.steps.push_back(std::move(elbow2));
-            move.steps.push_back(std::move(end));
-            move.execute(stateArray, logger);
-            moveList.push_back(std::move(move));
         }
     }
 
     return true;
 }
 
-bool sortArray(StateArrayAccessor& stateArray, 
+bool sortArray(ArrayAccessor& stateArray, 
     size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd, 
-    py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &targetGeometry, 
+    ArrayAccessor& targetGeometry, 
     std::vector<ParallelMove>& moveList, std::shared_ptr<spdlog::logger> logger)
 {
     bool channelVertical = COL_SPACING > ROW_SPACING;
-    unsigned int maxTones = AOD_TOTAL_LIMIT;
+    unsigned int maxTonesXC = AOD_TOTAL_LIMIT,
+        maxTonesAC = AOD_TOTAL_LIMIT;
 
     // Across channel dir will be abbreviated as XC, along channel as AC
     unsigned int arraySizeXC, arraySizeAC;
     double spacingXC, spacingAC;
     size_t compZoneXCStart, compZoneXCEnd, compZoneACStart, compZoneACEnd;
+    // Initialize data independent of whether sorting channel is vertical or horizontal
     if(channelVertical)
     {
-        if(AOD_ROW_LIMIT < maxTones)
+        if(AOD_COL_LIMIT < maxTonesXC)
         {
-            maxTones = AOD_ROW_LIMIT;
+            maxTonesXC = AOD_COL_LIMIT;
+        }
+        if(AOD_ROW_LIMIT < maxTonesAC)
+        {
+            maxTonesAC = AOD_ROW_LIMIT;
         }
         spacingXC = COL_SPACING;
         spacingAC = ROW_SPACING;
@@ -839,9 +1555,13 @@ bool sortArray(StateArrayAccessor& stateArray,
     }
     else
     {
-        if(AOD_COL_LIMIT < maxTones)
+        if(AOD_ROW_LIMIT < maxTonesXC)
         {
-            maxTones = AOD_COL_LIMIT;
+            maxTonesXC = AOD_ROW_LIMIT;
+        }
+        if(AOD_COL_LIMIT < maxTonesAC)
+        {
+            maxTonesAC = AOD_COL_LIMIT;
         }
         spacingXC = ROW_SPACING;
         spacingAC = COL_SPACING;
@@ -853,40 +1573,63 @@ bool sortArray(StateArrayAccessor& stateArray,
         compZoneACEnd = compZoneColEnd;
     }
 
-    int sortingChannelWidth = (int)(ceil((double)MIN_DIST_FROM_OCC_SITES / ((double)spacingXC / 2.)) / 2) + 1;
+    int sortingChannelWidth = (int)(ceil((double)MIN_DIST_FROM_OCC_SITES / ((double)spacingXC / 2.)) / 2) * 2;
     int targetGapXC = ceil((double)MIN_DIST_FROM_OCC_SITES / spacingXC);
     int targetGapAC = ceil((double)MIN_DIST_FROM_OCC_SITES / spacingAC);
 
+    // Differentiate between unusable (too close to each other) and usable atoms and add into per-index buffers
     auto [usableAtomsPerXCIndex, unusableAtomsPerXCIndex, targetSitesPerXCIndex] = 
-        findUnusableAtoms(stateArray, channelVertical, arraySizeXC, compZoneRowStart, 
+        findUnusableAtoms(stateArray, channelVertical, arraySizeXC, arraySizeAC, compZoneRowStart, 
             compZoneRowEnd, compZoneColStart, compZoneColEnd, targetGeometry);
 
-    clearFirstNRowsOrCols(stateArray, channelVertical, sortingChannelWidth + 1, 
-        moveList, arraySizeAC, maxTones, spacingXC, targetGapXC, logger);
+    // Determine were to start sorting. May either be from one side and iterate one way over the array or 
+    // from the middle and outward simultaneously
+    auto startingPosition = determineBestStartPosition(stateArray, channelVertical, 
+        sortingChannelWidth, moveList, arraySizeXC, compZoneXCStart, compZoneXCEnd, 
+        unusableAtomsPerXCIndex, usableAtomsPerXCIndex, targetSitesPerXCIndex);
+    if(startingPosition.has_value())
+    {
+        logger->debug("Best starting position: {}", startingPosition.value());
+    }
+    else
+    {
+        logger->error("Best starting position could not be determined!");
+        return false;
+    }
 
-    if(!sortRemainingRowsOrCols(stateArray, channelVertical, sortingChannelWidth, moveList, 
-        arraySizeAC, arraySizeXC, maxTones, spacingXC, usableAtomsPerXCIndex, unusableAtomsPerXCIndex, 
+    // Remove atoms from starting sorting channel
+    clearSortingChannel(stateArray, startingPosition.value(), channelVertical, sortingChannelWidth, 
+        moveList, arraySizeXC, arraySizeAC, maxTonesAC, spacingXC, targetGapXC, targetGapAC, 
+        usableAtomsPerXCIndex, unusableAtomsPerXCIndex, logger);
+
+    // Call main iterating function that sorts atoms row-by-row through sorting channel
+    if(!sortRemainingRowsOrCols(stateArray, startingPosition.value(), channelVertical, sortingChannelWidth, moveList, 
+        arraySizeAC, arraySizeXC, maxTonesXC, maxTonesAC, spacingXC, usableAtomsPerXCIndex, unusableAtomsPerXCIndex, 
         targetSitesPerXCIndex, compZoneXCStart, compZoneXCEnd, compZoneACStart, compZoneACEnd, 
         targetGapXC, targetGapAC, logger))
     {
-        if(!resolveSortingDeficiencies(stateArray, channelVertical, sortingChannelWidth, moveList, 
-            arraySizeAC, arraySizeXC, maxTones, spacingXC, usableAtomsPerXCIndex, unusableAtomsPerXCIndex, 
-            targetSitesPerXCIndex, compZoneXCStart, compZoneXCEnd, compZoneACStart, compZoneACEnd, 
-            targetGapXC, targetGapAC, logger))
+        // Fill remaining positions from parked atoms
+        if(!resolveSortingDeficiencies(stateArray, startingPosition.value(), channelVertical, 
+            sortingChannelWidth, moveList, arraySizeAC, arraySizeXC, maxTonesAC, spacingXC, 
+            usableAtomsPerXCIndex, unusableAtomsPerXCIndex, targetSitesPerXCIndex, 
+            compZoneXCStart, compZoneXCEnd, compZoneACStart, compZoneACEnd, targetGapXC, targetGapAC, logger))
         {
             logger->error("Array could not be sorted. Aborting");
             return false;
         }
+        return true;
     }
 
     return true;
 }
 
+// Access function to be bound, Eigen array act as interfaces as they can act on Python array data without reallocation
 std::optional<std::vector<ParallelMove>> sortLatticeByRowParallel(
     py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &stateArray, 
     size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd, 
     py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &targetGeometry)
 {
+    // Init logger
     std::shared_ptr<spdlog::logger> logger;
     Config& config = Config::getInstance();
     if((logger = spdlog::get(config.parallelLoggerName)) == nullptr)
@@ -894,6 +1637,8 @@ std::optional<std::vector<ParallelMove>> sortLatticeByRowParallel(
         logger = spdlog::basic_logger_mt(config.parallelLoggerName, config.logFileName);
     }
     logger->set_level(spdlog::level::debug);
+
+    omp_set_num_threads(NUM_THREADS);
 
     if(!compZoneRowEnd - compZoneRowStart == (size_t)targetGeometry.rows())
     {
@@ -906,8 +1651,7 @@ std::optional<std::vector<ParallelMove>> sortLatticeByRowParallel(
         return std::nullopt;
     }
 
-    omp_set_num_threads(NUM_THREADS);
-
+    // Log initial state
     std::stringstream strstream;
     strstream << "Initial state: \n";
     for(size_t r = 0; r < (size_t)stateArray.rows(); r++)
@@ -934,14 +1678,17 @@ std::optional<std::vector<ParallelMove>> sortLatticeByRowParallel(
     }
     logger->info(strstream.str());
 
-    EigenArrayStateArrayAccessor eigenStateArray(stateArray);
+    // Actual sorting call
+    EigenArrayAccessor eigenStateArray(stateArray);
+    EigenArrayAccessor eigenTargetArray(targetGeometry);
     std::vector<ParallelMove> moveList;
     if(!sortArray(eigenStateArray, compZoneRowStart, compZoneRowEnd, 
-        compZoneColStart, compZoneColEnd, targetGeometry, moveList, logger))
+        compZoneColStart, compZoneColEnd, eigenTargetArray, moveList, logger))
     {
         return std::nullopt;
     }
 
+    // Log final state if sorting was successful
     std::stringstream endstrstream;
     endstrstream << "Final state: \n";
     for(size_t r = 0; r < (size_t)stateArray.rows(); r++)

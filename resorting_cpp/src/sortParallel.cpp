@@ -26,7 +26,7 @@ size_t roundCoordDown(double coord)
     return (size_t)(coord + 0.25);
 }
 
-bool& accessStateArrayDim(StateArrayAccessor& stateArray,
+bool& accessStateArrayDim(ArrayAccessor& stateArray,
     size_t i, size_t j, bool rowFirst)
 {
     if(rowFirst)
@@ -39,7 +39,7 @@ bool& accessStateArrayDim(StateArrayAccessor& stateArray,
     }
 }
 
-void fillDimensionDependantData(StateArrayAccessor& stateArray, 
+void fillDimensionDependantData(ArrayAccessor& stateArray, 
     size_t compZone[4], bool rowFirst, size_t outerDimCompZone[2], size_t innerDimCompZone[2],
     size_t& outerSize, size_t& innerSize, unsigned int& outerAODLimit, unsigned int& innerAODLimit)
 {
@@ -114,7 +114,7 @@ double approxCostPerMove(double dist1, double dist2)
     }
 }
 
-bool fillSteps(StateArrayAccessor& stateArray, 
+bool fillSteps(ArrayAccessor& stateArray, 
     ParallelMove::Step& start, ParallelMove::Step& end, ParallelMove::Step& step1, ParallelMove::Step& step2, 
     bool rowFirst, double& maxDist, std::shared_ptr<spdlog::logger> logger)
 {
@@ -197,8 +197,7 @@ bool fillSteps(StateArrayAccessor& stateArray,
 }
 
 ParallelMove ParallelMove::fromStartAndEnd(
-    StateArrayAccessor& stateArray,
-    ParallelMove::Step start, ParallelMove::Step end, std::shared_ptr<spdlog::logger> logger)
+    ArrayAccessor& stateArray, ParallelMove::Step start, ParallelMove::Step end, std::shared_ptr<spdlog::logger> logger)
 {
     ParallelMove move;
     ParallelMove::Step step1;
@@ -314,7 +313,7 @@ double ParallelMove::cost()
     return cost;
 }
 
-bool ParallelMove::execute(StateArrayAccessor& stateArray, std::shared_ptr<spdlog::logger> logger,
+bool ParallelMove::execute(ArrayAccessor& stateArray, std::shared_ptr<spdlog::logger> logger,
     std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>> alreadyMoved) const
 {
     const auto& firstStep = this->steps.front();
@@ -420,8 +419,7 @@ bool ParallelMove::execute(StateArrayAccessor& stateArray, std::shared_ptr<spdlo
 }
 
 std::tuple<std::optional<ParallelMove>,int,double> improveMoveByAddingIndependentAtom(
-    StateArrayAccessor& stateArray, 
-    size_t compZone[4], std::shared_ptr<spdlog::logger> logger, ParallelMove move, 
+    ArrayAccessor& stateArray, size_t compZone[4], std::shared_ptr<spdlog::logger> logger, ParallelMove move, 
     std::optional<double> cost, std::optional<unsigned int> filledVacancies,
     std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>> alreadyMoved)
 {
@@ -656,8 +654,7 @@ std::tuple<std::optional<ParallelMove>,int,double> improveMoveByAddingIndependen
 }
 
 std::tuple<std::optional<ParallelMove>,int,double> improveComplexMove(
-    StateArrayAccessor& stateArray, 
-    size_t compZone[4], std::shared_ptr<spdlog::logger> logger, ParallelMove move, 
+    ArrayAccessor& stateArray, size_t compZone[4], std::shared_ptr<spdlog::logger> logger, ParallelMove move, 
     std::optional<double> cost, std::optional<unsigned int> filledVacancies,
     std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>> alreadyMoved)
 {
@@ -931,7 +928,7 @@ std::tuple<std::optional<ParallelMove>,int,double> improveComplexMove(
     return std::tuple(std::move(improvedMove), filledVacancies.value(), bestCostPerFilledVacancy);
 }
 
-std::pair<double, std::optional<ParallelMove>> checkComplexMoveCost(StateArrayAccessor& stateArray, 
+std::pair<double, std::optional<ParallelMove>> checkComplexMoveCost(ArrayAccessor& stateArray, 
     size_t compZone[4], std::shared_ptr<spdlog::logger> logger, RowBitMask& sourceBitMask, RowBitMask& targetBitMask, 
     bool rowFirst, size_t colDimCompZone[2], size_t cols, unsigned int maxColCount, std::optional<double> bestCostPerFilledGap)
 {
@@ -1095,7 +1092,7 @@ bool stopFurtherMoveInvestigationAtRowCount(unsigned int rowCount, unsigned int 
     }
 }
 
-std::tuple<std::optional<ParallelMove>,int,double> moveSeveralRowsAndCols(StateArrayAccessor& stateArray, 
+std::tuple<std::optional<ParallelMove>,int,double> moveSeveralRowsAndCols(ArrayAccessor& stateArray, 
     size_t compZone[4], std::shared_ptr<spdlog::logger> logger,
     std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>> alreadyMoved)
 {
@@ -1304,7 +1301,7 @@ std::tuple<std::optional<ParallelMove>,int,double> moveSeveralRowsAndCols(StateA
     }
 }
 
-std::tuple<std::optional<ParallelMove>,int,double> fillColumnHorizontally(StateArrayAccessor& stateArray, 
+std::tuple<std::optional<ParallelMove>,int,double> fillColumnHorizontally(ArrayAccessor& stateArray, 
     size_t compZone[4], std::shared_ptr<spdlog::logger> logger,
     std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>>)
 {
@@ -1454,7 +1451,7 @@ std::tuple<std::optional<ParallelMove>,int,double> fillColumnHorizontally(StateA
     return std::tuple(bestMove, bestFillableGaps, bestCostPerFilledGap);
 }
 
-std::tuple<std::optional<ParallelMove>,int,double> fillRowThroughSubspace(StateArrayAccessor& stateArray, 
+std::tuple<std::optional<ParallelMove>,int,double> fillRowThroughSubspace(ArrayAccessor& stateArray, 
     size_t compZone[4], std::shared_ptr<spdlog::logger> logger,
     std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>>)
 {
@@ -1657,7 +1654,7 @@ std::tuple<std::optional<ParallelMove>,int,double> fillRowThroughSubspace(StateA
     return std::tuple(bestMove, bestFillableGaps, bestCostPerFilledGap);
 }
 
-std::tuple<std::optional<ParallelMove>,int,double> fillRowSidesDirectly(StateArrayAccessor& stateArray, 
+std::tuple<std::optional<ParallelMove>,int,double> fillRowSidesDirectly(ArrayAccessor& stateArray, 
     size_t compZone[4], std::shared_ptr<spdlog::logger> logger,
     std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>> alreadyMoved)
 {
@@ -1853,7 +1850,7 @@ std::tuple<std::optional<ParallelMove>,int,double> fillRowSidesDirectly(StateArr
     return std::tuple(bestMove, bestFillableGaps, bestCostPerFilledGap);
 }
 
-bool analyzeArray(StateArrayAccessor& stateArray, 
+bool analyzeArray(ArrayAccessor& stateArray, 
     size_t compZone[4], unsigned int& vacancies, std::shared_ptr<spdlog::logger> logger, bool printArray)
 {
     vacancies = 0;
@@ -1871,7 +1868,7 @@ bool analyzeArray(StateArrayAccessor& stateArray,
     return true;
 }
 
-bool findNextMove(StateArrayAccessor& stateArray, 
+bool findNextMove(ArrayAccessor& stateArray, 
     size_t compZone[4], std::vector<ParallelMove>& moves, bool& sorted, unsigned int& vacancies, std::shared_ptr<spdlog::logger> logger,
     std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>> alreadyMoved)
 {
@@ -1931,8 +1928,7 @@ bool findNextMove(StateArrayAccessor& stateArray,
 }
 
 std::optional<std::vector<ParallelMove>> sortParallelInternal(
-    StateArrayAccessor& stateArray, 
-    size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd,
+    ArrayAccessor& stateArray, size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd,
     std::shared_ptr<spdlog::logger> logger)
 {
     std::optional<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> alreadyMoved = std::nullopt;
@@ -1988,7 +1984,7 @@ std::optional<std::vector<ParallelMove>> sortParallel(
         logger = spdlog::basic_logger_mt(config.parallelLoggerName, config.logFileName);
     }
 
-    EigenArrayStateArrayAccessor stateArrayAccessor(stateArray);
+    EigenArrayAccessor stateArrayAccessor(stateArray);
     return sortParallelInternal(stateArrayAccessor, compZoneRowStart, 
         compZoneRowEnd, compZoneColStart, compZoneColEnd, logger);
 }

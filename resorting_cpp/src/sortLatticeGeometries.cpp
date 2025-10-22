@@ -2001,13 +2001,13 @@ std::optional<std::tuple<std::vector<std::tuple<int,int>>, double>> analyzeLinea
             else
             {
                 newShifts.push_back(std::tuple(atomIndex, -1));
-                shiftBenefit += ((atomIndex >= compZoneStart && atomIndex < compZoneEnd) ? 
+                shiftBenefit += ((atomIndex >= (int)compZoneStart && atomIndex < (int)compZoneEnd) ? 
                     VALUE_CLEARED_UNDESIRED_UNUSABLE : VALUE_CLEARED_OUTSIDE_UNUSABLE);
                 iter = sourceAtoms.erase(iter);
             }
         }
     }
-    if(sectionEnd == innerDimMax)
+    if(sectionEnd == (int)innerDimMax)
     {
         for(auto iter = sourceAtoms.rbegin(); iter != sourceAtoms.rend();)
         {
@@ -2019,7 +2019,7 @@ std::optional<std::tuple<std::vector<std::tuple<int,int>>, double>> analyzeLinea
             else
             {
                 newShifts.push_back(std::tuple(atomIndex, innerDimMax));
-                shiftBenefit += ((atomIndex >= compZoneStart && atomIndex < compZoneEnd) ? 
+                shiftBenefit += ((atomIndex >= (int)compZoneStart && atomIndex < (int)compZoneEnd) ? 
                     VALUE_CLEARED_UNDESIRED_UNUSABLE : VALUE_CLEARED_OUTSIDE_UNUSABLE);
                 sourceAtoms.erase((++iter).base());
             }
@@ -2043,7 +2043,6 @@ std::optional<std::tuple<std::vector<std::tuple<int,int>>, double>> analyzeLinea
         {
             const auto& [firstAtomUsable, firstAtomLocation] = *iter;
 
-            bool atomMovable = true;
             bool requiresGap = iter != sourceAtoms.begin() || (!firstAtomUsable && !lastAtomUsable);
 
             int shiftedAtomLocation = minimumTargetSpot;
@@ -3346,7 +3345,7 @@ bool findAndExecuteMoves(Eigen::Ref<Eigen::Array<unsigned int,Eigen::Dynamic,Eig
                 {
                     return false;
                 }
-                EigenArrayStateArrayAccessor genericAccessor(stateArray);
+                EigenArrayAccessor genericAccessor(stateArray);
                 if(!move.execute(genericAccessor, logger))
                 {
                     return false;
@@ -3391,25 +3390,6 @@ bool findAndExecuteMoves(Eigen::Ref<Eigen::Array<unsigned int,Eigen::Dynamic,Eig
         }
         pathwayMoveTime += std::chrono::steady_clock::now() - startTime;
 
-        /*startTime = std::chrono::steady_clock::now();
-        auto linearMove = findLinearMove(penalizedPathway, pathway, labelledPathway, stateArray, targetGeometry,
-            unusableAtoms, usableAtoms, usableTargetSites, compZoneRowStart, compZoneRowEnd,
-            compZoneColStart, compZoneColEnd, borderRows, borderCols, bestIntPerCost, logger);
-        if(linearMove.has_value() && (!bestMove.has_value() || std::get<1>(linearMove.value()) > bestIntPerCost))
-        {
-            std::tie(bestMove, bestIntPerCost) = linearMove.value();
-        }
-        linearMoveTime += std::chrono::steady_clock::now() - startTime;*/
-
-        /*startTime = std::chrono::steady_clock::now();
-        auto complexMove = findComplexMove(penalizedPathway, labelledPathway, labelCount, stateArray, targetGeometry, unusableAtoms, usableTargetSites,
-            compZoneRowStart, compZoneRowEnd, compZoneColStart, compZoneColEnd, borderRows, borderCols, bestIntPerCost, logger);
-        if(complexMove.has_value() && (!bestMove.has_value() || std::get<1>(complexMove.value()) > bestIntPerCost))
-        {
-            std::tie(bestMove, bestIntPerCost) = complexMove.value();
-        }
-        complexMoveTime += std::chrono::steady_clock::now() - startTime;*/
-
         startTime = std::chrono::steady_clock::now();
         if(bestMove.has_value())
         {
@@ -3419,7 +3399,7 @@ bool findAndExecuteMoves(Eigen::Ref<Eigen::Array<unsigned int,Eigen::Dynamic,Eig
             {
                 return false;
             }
-            EigenArrayStateArrayAccessor genericAccessor(stateArray);
+            EigenArrayAccessor genericAccessor(stateArray);
             if(!bestMove.value().execute(genericAccessor, logger))
             {
                 return false;
@@ -3916,7 +3896,7 @@ bool createMinimallyInvasiveAccessPathway(py::EigenDRef<Eigen::Array<bool, Eigen
                         auto move = createRemovalMove(stateArray, pathwayVertical, alongBorderIndices, inwardIndices, atLowIndex);
                         inwardIndices.clear();
 
-                        EigenArrayStateArrayAccessor genericAccessor(stateArray);
+                        EigenArrayAccessor genericAccessor(stateArray);
                         move.execute(genericAccessor, logger);
                         moveList.push_back(std::move(move));
                     }
@@ -3928,7 +3908,7 @@ bool createMinimallyInvasiveAccessPathway(py::EigenDRef<Eigen::Array<bool, Eigen
                     alongBorderIndices.size(), inwardIndices.size());
                 auto move = createRemovalMove(stateArray, pathwayVertical, alongBorderIndices, inwardIndices, atLowIndex);
 
-                EigenArrayStateArrayAccessor genericAccessor(stateArray);
+                EigenArrayAccessor genericAccessor(stateArray);
                 move.execute(genericAccessor, logger);
                 moveList.push_back(std::move(move));
             }
@@ -3967,7 +3947,7 @@ bool sortArray(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, 
         borderRows, borderCols, logger);
     for(const auto& move : removalMoves)
     {
-        EigenArrayStateArrayAccessor genericAccessor(stateArray);
+        EigenArrayAccessor genericAccessor(stateArray);
         if(!move.execute(genericAccessor, logger))
         {
             return false;
