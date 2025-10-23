@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup Label="UserMacros">
+    <PythonSuffix>.cp311-win_amd64.pyd</PythonSuffix>
+    <PythonIncludeDir>Enter Library Directory, e.g. C:\Users\username\AppData\Local\Programs\Python\Python311\include</PythonIncludeDir>
+    <PythonLibDir>Enter Library Directory, e.g. C:\Users\username\AppData\Local\Programs\Python\Python311\libs</PythonLibDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <BuildMacro Include="PythonSuffix">
+      <Value>$(PythonSuffix)</Value>
+    </BuildMacro>
+    <BuildMacro Include="PythonIncludeDir">
+      <Value>$(PythonIncludeDir)</Value>
+    </BuildMacro>
+    <BuildMacro Include="PythonLibDir">
+      <Value>$(PythonLibDir)</Value>
+    </BuildMacro>
+  </ItemGroup>
+</Project>
