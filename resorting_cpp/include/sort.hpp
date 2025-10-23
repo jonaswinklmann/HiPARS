@@ -8,6 +8,13 @@
 #include <stdexcept>
 #include <sstream>
 
+#ifdef _MSC_VER
+#include <intrin.h>
+#define popcount_archspec __popcnt
+#else
+#define popcount_archspec std::__popcount
+#endif
+
 #define DOUBLE_EQUIVALENCE_THRESHOLD 0.00001
 
 namespace py = pybind11;
@@ -153,7 +160,7 @@ public:
         unsigned int popCount = 0;
         for(size_t i = 0; i <= this->count / 64; i++)
         {
-            popCount += std::__popcount(this->bitMask[i]);
+            popCount += popcount_archspec(this->bitMask[i]);
         }
         return popCount;
     }

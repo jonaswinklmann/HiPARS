@@ -4,6 +4,7 @@
 #include <iomanip>
 #include <iostream>
 #include <fstream>
+#include <cfloat>
 
 #include "config.hpp"
 #include "spdlog/sinks/basic_file_sink.h"
@@ -426,7 +427,7 @@ std::tuple<std::optional<ParallelMove>,int,double> improveMoveByAddingIndependen
     if(AOD_COL_LIMIT <= 1 || AOD_ROW_LIMIT <= 1 || !ALLOW_MOVES_BETWEEN_COLS || !ALLOW_MOVES_BETWEEN_ROWS)
     {
         logger->info("Move limitations prevent method for improving move by adding independent atoms");
-        return std::tuple(std::nullopt, 0, __DBL_MAX__);
+        return std::tuple(std::nullopt, 0, DBL_MAX);
     }
 
     ParallelMove::Step start = move.steps[0];
@@ -661,7 +662,7 @@ std::tuple<std::optional<ParallelMove>,int,double> improveComplexMove(
     if(AOD_COL_LIMIT <= 1 || AOD_ROW_LIMIT <= 1 || !ALLOW_MOVES_BETWEEN_COLS || !ALLOW_MOVES_BETWEEN_ROWS)
     {
         logger->info("Move limitations prevent method for improving complex row and col move");
-        return std::tuple(std::nullopt, 0, __DBL_MAX__);
+        return std::tuple(std::nullopt, 0, DBL_MAX);
     }
 
     ParallelMove::Step start = move.steps[0];
@@ -1099,7 +1100,7 @@ std::tuple<std::optional<ParallelMove>,int,double> moveSeveralRowsAndCols(ArrayA
     if(AOD_COL_LIMIT <= 1 || AOD_ROW_LIMIT <= 1 || !ALLOW_MOVES_BETWEEN_COLS || !ALLOW_MOVES_BETWEEN_ROWS)
     {
         logger->info("Move limitations prevent method for complicated row and col move");
-        return std::tuple(std::nullopt, 0, __DBL_MAX__);
+        return std::tuple(std::nullopt, 0, DBL_MAX);
     }
 
     unsigned int roundedDownSqrtTotalAOD = sqrt(AOD_TOTAL_LIMIT);
@@ -1297,7 +1298,7 @@ std::tuple<std::optional<ParallelMove>,int,double> moveSeveralRowsAndCols(ArrayA
     else
     {
         logger->info("No multi row and column move could be found");
-        return std::tuple(std::nullopt, 0, __DBL_MAX__);
+        return std::tuple(std::nullopt, 0, DBL_MAX);
     }
 }
 
@@ -1476,19 +1477,19 @@ std::tuple<std::optional<ParallelMove>,int,double> fillRowThroughSubspace(ArrayA
         if(borderAtomsLeft == 0)
         {
             logger->error("Could not allocate memory");
-            return std::tuple(std::nullopt, 0, __DBL_MAX__);
+            return std::tuple(std::nullopt, 0, DBL_MAX);
         }
         unsigned int *borderAtomsRight = new (std::nothrow) unsigned int[outerDimCompZone[1] - outerDimCompZone[0]]();
         if(borderAtomsRight == 0)
         {
             logger->error("Could not allocate memory");
-            return std::tuple(std::nullopt, 0, __DBL_MAX__);
+            return std::tuple(std::nullopt, 0, DBL_MAX);
         }
         unsigned int *emptyCompZoneLocations = new (std::nothrow) unsigned int[outerDimCompZone[1] - outerDimCompZone[0]]();
         if(emptyCompZoneLocations == 0)
         {
             logger->error("Could not allocate memory");
-            return std::tuple(std::nullopt, 0, __DBL_MAX__);
+            return std::tuple(std::nullopt, 0, DBL_MAX);
         }
         for(size_t i = outerDimCompZone[0]; i < outerDimCompZone[1]; i++)
         {
@@ -1549,7 +1550,7 @@ std::tuple<std::optional<ParallelMove>,int,double> fillRowThroughSubspace(ArrayA
                     if(distances == 0)
                     {
                         logger->error("Could not allocate memory");
-                        return std::tuple(std::nullopt, 0, __DBL_MAX__);
+                        return std::tuple(std::nullopt, 0, DBL_MAX);
                     }
 
                     for(unsigned int atomsFromLeft = minFromLeft; atomsFromLeft <= maxFromLeft; atomsFromLeft++)

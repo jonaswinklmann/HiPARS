@@ -19,5 +19,5 @@ setup(
         'Programming Language :: Python :: 3',
     ],
     include_package_data=True,
-    package_data={'': ['*.so','*.dll']}
+    package_data={'': ['*.so','*.dll','*.pyd']}
 )
