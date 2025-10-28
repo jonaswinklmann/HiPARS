@@ -1,3 +1,6 @@
+#define _USE_MATH_DEFINES
+#include <cmath>
+
 #include "sort.hpp"
 
 #define AOD_TOTAL_LIMIT 256

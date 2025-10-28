@@ -7,4 +7,4 @@ dependencies = []
 requires = ["setuptools >= 42.0.0", "numpy"]
 build-backend = "setuptools.build_meta"
 [tool.setuptools.package-data]
-hipars = ["*.so", "*.dll"]
+hipars = ["*.so", "*.dll","*.pyd"]
