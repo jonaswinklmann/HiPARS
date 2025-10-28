@@ -8,6 +8,8 @@
 #include <stdexcept>
 #include <sstream>
 
+#include "config.hpp"
+
 #ifdef _MSC_VER
 #include <intrin.h>
 #define popcount_archspec __popcnt
@@ -15,7 +17,11 @@
 #define popcount_archspec std::__popcount
 #endif
 
-#define DOUBLE_EQUIVALENCE_THRESHOLD 0.00001
+double inline costPerSubMove(double dist)
+{
+    return dist > DOUBLE_EQUIVALENCE_THRESHOLD ? (Config::getInstance().moveCostOffset + Config::getInstance().moveCostScalingLinear * dist + 
+        (Config::getInstance().moveCostScalingSqrt != 0 ? Config::getInstance().moveCostScalingSqrt * sqrt(dist) : 0)) : 0;
+}
 
 namespace py = pybind11;
 

@@ -52,8 +52,8 @@ void fillDimensionDependantData(ArrayAccessor& stateArray,
         innerDimCompZone[1] = compZone[3];
         outerSize = stateArray.rows();
         innerSize = stateArray.cols();
-        outerAODLimit = AOD_ROW_LIMIT;
-        innerAODLimit = AOD_COL_LIMIT;
+        outerAODLimit = Config::getInstance().aodRowLimit;
+        innerAODLimit = Config::getInstance().aodColLimit;
     }
     else
     {
@@ -63,30 +63,33 @@ void fillDimensionDependantData(ArrayAccessor& stateArray,
         innerDimCompZone[1] = compZone[1];
         outerSize = stateArray.cols();
         innerSize = stateArray.rows();
-        outerAODLimit = AOD_COL_LIMIT;
-        innerAODLimit = AOD_ROW_LIMIT;
+        outerAODLimit = Config::getInstance().aodColLimit;
+        innerAODLimit = Config::getInstance().aodRowLimit;
     }
 }
 
 double approxCostPerMove(double dist1, double dist2)
 {
-    if(ALLOW_DIAGONAL_MOVEMENT)
+    if(Config::getInstance().allowDiagonalMovement)
     {
         if(dist1 <= 1 + DOUBLE_EQUIVALENCE_THRESHOLD && dist2 <= 1 + DOUBLE_EQUIVALENCE_THRESHOLD)
         {
             if(dist1 >= 1 - DOUBLE_EQUIVALENCE_THRESHOLD && dist2 >= 1 - DOUBLE_EQUIVALENCE_THRESHOLD)
             {
-                return MOVE_COST_OFFSET + DIAG_STEP_COST;
+                return Config::getInstance().moveCostOffset + Config::getInstance().moveCostOffsetSubmove + 
+                    Config::getInstance().moveCostScalingSqrt * M_4TH_ROOT_2 + Config::getInstance().moveCostScalingLinear * M_SQRT2;
             }
             else
             {
                 // If not both are 1 then at least one has to be 0 so dist1+dist2 = sqrt(dist1^2 + dist2^2)
-                return MOVE_COST_OFFSET + costPerSubMove(dist1 + dist2);
+                return Config::getInstance().moveCostOffset + costPerSubMove(dist1 + dist2);
             }
         }
         else
         {
-            double cost = MOVE_COST_OFFSET + 2 * HALF_DIAG_STEP_COST;
+            // 2 * half diagonal step cost
+            double cost = Config::getInstance().moveCostOffset + 2 * (Config::getInstance().moveCostOffsetSubmove + 
+                Config::getInstance().moveCostScalingSqrt * M_4TH_ROOT_1_2 + Config::getInstance().moveCostScalingLinear * M_SQRT1_2);
             if(dist1 > 1 + DOUBLE_EQUIVALENCE_THRESHOLD)
             {
                 cost += costPerSubMove(dist1 - 1);
@@ -102,15 +105,19 @@ double approxCostPerMove(double dist1, double dist2)
     {
         if(dist1 < 1 + DOUBLE_EQUIVALENCE_THRESHOLD)
         {
-            return MOVE_COST_OFFSET + 2 * HALF_STEP_COST + costPerSubMove(dist2);
+            return Config::getInstance().moveCostOffset + 2 * (Config::getInstance().moveCostOffsetSubmove + 
+                Config::getInstance().moveCostScalingSqrt * M_SQRT1_2 + Config::getInstance().moveCostScalingLinear / 2) + costPerSubMove(dist2);
         }
         else if(dist2 < 1 + DOUBLE_EQUIVALENCE_THRESHOLD)
         {
-            return MOVE_COST_OFFSET + 2 * HALF_STEP_COST + costPerSubMove(dist1);
+            return Config::getInstance().moveCostOffset + 2 * (Config::getInstance().moveCostOffsetSubmove + 
+                Config::getInstance().moveCostScalingSqrt * M_SQRT1_2 + Config::getInstance().moveCostScalingLinear / 2) + costPerSubMove(dist1);
         }
         else
         {
-            return MOVE_COST_OFFSET + 2 * HALF_STEP_COST + costPerSubMove(dist1 - 0.5) + costPerSubMove(dist2 - 0.5);
+            return Config::getInstance().moveCostOffset + 2 * (Config::getInstance().moveCostOffsetSubmove + 
+                Config::getInstance().moveCostScalingSqrt * M_SQRT1_2 + Config::getInstance().moveCostScalingLinear / 2) + 
+                costPerSubMove(dist1 - 0.5) + costPerSubMove(dist2 - 0.5);
         }
     }
 }
@@ -219,11 +226,11 @@ ParallelMove ParallelMove::fromStartAndEnd(
     }
        
     move.steps.push_back(start);
-    if(!completelyDirectMove && (!ALLOW_DIAGONAL_MOVEMENT ||
+    if(!completelyDirectMove && (!Config::getInstance().allowDiagonalMovement ||
         (maxRowDist > 1 + DOUBLE_EQUIVALENCE_THRESHOLD || maxColDist > 1 + DOUBLE_EQUIVALENCE_THRESHOLD)))
     {
         bool require4Steps = maxRowDist > 1 + DOUBLE_EQUIVALENCE_THRESHOLD && maxColDist > 1 + DOUBLE_EQUIVALENCE_THRESHOLD;
-        if(!ALLOW_DIAGONAL_MOVEMENT)
+        if(!Config::getInstance().allowDiagonalMovement)
         {
             if(maxRowDist > maxColDist)
             {
@@ -274,7 +281,7 @@ ParallelMove ParallelMove::fromStartAndEnd(
 
 double ParallelMove::cost()
 {
-    double cost = MOVE_COST_OFFSET;
+    double cost = Config::getInstance().moveCostOffset;
     const ParallelMove::Step *lastStep = &this->steps[0];
     for(size_t step = 1; step < this->steps.size(); step++)
     {
@@ -424,7 +431,13 @@ std::tuple<std::optional<ParallelMove>,int,double> improveMoveByAddingIndependen
     std::optional<double> cost, std::optional<unsigned int> filledVacancies,
     std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>> alreadyMoved)
 {
-    if(AOD_COL_LIMIT <= 1 || AOD_ROW_LIMIT <= 1 || !ALLOW_MOVES_BETWEEN_COLS || !ALLOW_MOVES_BETWEEN_ROWS)
+    unsigned int aodRowLimit = Config::getInstance().aodRowLimit;
+    unsigned int aodColLimit = Config::getInstance().aodColLimit;
+    unsigned int aodTotalLimit = Config::getInstance().aodTotalLimit;
+    bool allowMovingEmptyTrapOntoOccupied = Config::getInstance().allowMovingEmptyTrapOntoOccupied;
+
+    if(aodColLimit <= 1 || aodRowLimit <= 1 || 
+        !Config::getInstance().allowMovesBetweenCols || !Config::getInstance().allowMovesBetweenRows)
     {
         logger->info("Move limitations prevent method for improving move by adding independent atoms");
         return std::tuple(std::nullopt, 0, DBL_MAX);
@@ -488,7 +501,7 @@ std::tuple<std::optional<ParallelMove>,int,double> improveMoveByAddingIndependen
     unsigned int selectedCols = start.colSelection.size();
 
     double bestCostPerFilledVacancy = cost.value() / (double)filledVacancies.value();
-    while(selectedRows < AOD_ROW_LIMIT && selectedCols < AOD_COL_LIMIT && (selectedCols + 1) * (selectedRows + 1) < AOD_TOTAL_LIMIT)
+    while(selectedRows < aodRowLimit && selectedCols < aodColLimit && (selectedCols + 1) * (selectedRows + 1) < aodTotalLimit)
     {
         std::optional<std::tuple<size_t,size_t,size_t,size_t>> addedOuterAndInnerRowAndCol = std::nullopt;
 
@@ -551,7 +564,7 @@ std::tuple<std::optional<ParallelMove>,int,double> improveMoveByAddingIndependen
                             for(size_t innerRow = innerStartIndex; innerRow < innerEndIndex; innerRow++)
                             {
                                 bool allowed = true;
-                                if(!ALLOW_MOVING_EMPTY_TRAP_ONTO_OCCUPIED)
+                                if(!allowMovingEmptyTrapOntoOccupied)
                                 {
                                     for(double col : end.colSelection)
                                     {
@@ -564,7 +577,7 @@ std::tuple<std::optional<ParallelMove>,int,double> improveMoveByAddingIndependen
                                 }
                                 for(size_t innerCol = innerColStart; innerCol < innerColEnd; innerCol++)
                                 {
-                                    if(!ALLOW_MOVING_EMPTY_TRAP_ONTO_OCCUPIED)
+                                    if(!allowMovingEmptyTrapOntoOccupied)
                                     {
                                         for(double row : end.rowSelection)
                                         {
@@ -659,7 +672,13 @@ std::tuple<std::optional<ParallelMove>,int,double> improveComplexMove(
     std::optional<double> cost, std::optional<unsigned int> filledVacancies,
     std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>> alreadyMoved)
 {
-    if(AOD_COL_LIMIT <= 1 || AOD_ROW_LIMIT <= 1 || !ALLOW_MOVES_BETWEEN_COLS || !ALLOW_MOVES_BETWEEN_ROWS)
+    unsigned int aodRowLimit = Config::getInstance().aodRowLimit;
+    unsigned int aodColLimit = Config::getInstance().aodColLimit;
+    unsigned int aodTotalLimit = Config::getInstance().aodTotalLimit;
+    bool allowMovingEmptyTrapOntoOccupied = Config::getInstance().allowMovingEmptyTrapOntoOccupied;
+    bool allowMultipleMovesPerAtom = Config::getInstance().allowMultipleMovesPerAtom;
+
+    if(aodColLimit <= 1 || aodRowLimit <= 1 || !Config::getInstance().allowMovesBetweenCols || !Config::getInstance().allowMovesBetweenRows)
     {
         logger->info("Move limitations prevent method for improving complex row and col move");
         return std::tuple(std::nullopt, 0, DBL_MAX);
@@ -724,7 +743,7 @@ std::tuple<std::optional<ParallelMove>,int,double> improveComplexMove(
     {
         std::optional<std::tuple<size_t,size_t,bool>> addedOuterAndInnerIndexAndIsRow = std::nullopt;
 
-        if(selectedRows < AOD_ROW_LIMIT && selectedCols * (selectedRows + 1) < AOD_TOTAL_LIMIT)
+        if(selectedRows < aodRowLimit && selectedCols * (selectedRows + 1) < aodTotalLimit)
         {
             for(size_t rowIndex = 0; rowIndex <= selectedRows; rowIndex++)
             {
@@ -738,7 +757,7 @@ std::tuple<std::optional<ParallelMove>,int,double> improveComplexMove(
                 }
                 for(size_t outerRow = outerStartIndex; outerRow < outerEndIndex; outerRow++)
                 {
-                    if(!ALLOW_MULTIPLE_MOVES_PER_ATOM && alreadyMoved.has_value())
+                    if(!allowMultipleMovesPerAtom && alreadyMoved.has_value())
                     {
                         bool allowed = true;
                         for(size_t colIndex = 0; colIndex < selectedCols; colIndex++)
@@ -773,7 +792,7 @@ std::tuple<std::optional<ParallelMove>,int,double> improveComplexMove(
                                     additionalFilledVacancies++;
                                 }
                             }
-                            else if(stateArray(innerRow, roundCoordDown(end.colSelection[colIndex])) && !ALLOW_MOVING_EMPTY_TRAP_ONTO_OCCUPIED)
+                            else if(stateArray(innerRow, roundCoordDown(end.colSelection[colIndex])) && !allowMovingEmptyTrapOntoOccupied)
                             {
                                 allowed = false;
                             }
@@ -806,7 +825,7 @@ std::tuple<std::optional<ParallelMove>,int,double> improveComplexMove(
                 }
             }
         }
-        if(selectedCols < AOD_COL_LIMIT && selectedRows * (selectedCols + 1) < AOD_TOTAL_LIMIT)
+        if(selectedCols < aodColLimit && selectedRows * (selectedCols + 1) < aodTotalLimit)
         {
             for(size_t colIndex = 0; colIndex <= selectedCols; colIndex++)
             {
@@ -820,7 +839,7 @@ std::tuple<std::optional<ParallelMove>,int,double> improveComplexMove(
                 }
                 for(size_t outerCol = outerStartIndex; outerCol < outerEndIndex; outerCol++)
                 {
-                    if(!ALLOW_MULTIPLE_MOVES_PER_ATOM && alreadyMoved.has_value())
+                    if(!allowMultipleMovesPerAtom && alreadyMoved.has_value())
                     {
                         bool allowed = true;
                         for(size_t rowIndex = 0; rowIndex < selectedRows; rowIndex++)
@@ -855,7 +874,7 @@ std::tuple<std::optional<ParallelMove>,int,double> improveComplexMove(
                                     additionalFilledVacancies++;
                                 }
                             }
-                            else if(stateArray(roundCoordDown(end.rowSelection[rowIndex]), innerCol) && !ALLOW_MOVING_EMPTY_TRAP_ONTO_OCCUPIED)
+                            else if(stateArray(roundCoordDown(end.rowSelection[rowIndex]), innerCol) && !allowMovingEmptyTrapOntoOccupied)
                             {
                                 allowed = false;
                             }
@@ -945,7 +964,9 @@ std::pair<double, std::optional<ParallelMove>> checkComplexMoveCost(ArrayAccesso
             fillableCols = maxColCount;
         }
 
-        double cost = MOVE_COST_OFFSET + 2 * HALF_DIAG_STEP_COST;
+        // 2 * half diagonal step cost
+        double cost = Config::getInstance().moveCostOffset + 2 * (Config::getInstance().moveCostOffsetSubmove + 
+            Config::getInstance().moveCostScalingSqrt * M_4TH_ROOT_1_2 + Config::getInstance().moveCostScalingLinear * M_SQRT1_2);
         double maxDist = 0;
         for(size_t i = 0; i < sourceBitMask.indices.size(); i++)
         {
@@ -1097,13 +1118,15 @@ std::tuple<std::optional<ParallelMove>,int,double> moveSeveralRowsAndCols(ArrayA
     size_t compZone[4], std::shared_ptr<spdlog::logger> logger,
     std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>> alreadyMoved)
 {
-    if(AOD_COL_LIMIT <= 1 || AOD_ROW_LIMIT <= 1 || !ALLOW_MOVES_BETWEEN_COLS || !ALLOW_MOVES_BETWEEN_ROWS)
+    unsigned int aodTotalLimit = Config::getInstance().aodTotalLimit;
+
+    if(Config::getInstance().aodColLimit <= 1 || Config::getInstance().aodRowLimit <= 1 || !Config::getInstance().allowMovesBetweenCols || !Config::getInstance().allowMovesBetweenRows)
     {
         logger->info("Move limitations prevent method for complicated row and col move");
         return std::tuple(std::nullopt, 0, DBL_MAX);
     }
 
-    unsigned int roundedDownSqrtTotalAOD = sqrt(AOD_TOTAL_LIMIT);
+    unsigned int roundedDownSqrtTotalAOD = sqrt(aodTotalLimit);
     std::optional<ParallelMove> bestMove = std::nullopt;
     unsigned int bestFillableGaps = 0;
     double bestCostPerFilledGap = 0;
@@ -1234,9 +1257,9 @@ std::tuple<std::optional<ParallelMove>,int,double> moveSeveralRowsAndCols(ArrayA
                 continue;
             }
             unsigned int maxCols = colAODLimit;
-            if(AOD_TOTAL_LIMIT / rowCount < maxCols)
+            if(aodTotalLimit / rowCount < maxCols)
             {
-                maxCols = AOD_TOTAL_LIMIT / rowCount;
+                maxCols = aodTotalLimit / rowCount;
             }
             for(const auto& prevBitMask : *prevBitMasksPerOuterRowSet)
             {
@@ -1306,12 +1329,14 @@ std::tuple<std::optional<ParallelMove>,int,double> fillColumnHorizontally(ArrayA
     size_t compZone[4], std::shared_ptr<spdlog::logger> logger,
     std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>>)
 {
+    unsigned int aodTotalLimit = Config::getInstance().aodTotalLimit;
+
     std::optional<ParallelMove> bestMove = std::nullopt;
     unsigned int bestFillableGaps = 0;
     double bestCostPerFilledGap = 0;
     for(bool rowFirst : {true, false})
     {
-        if((rowFirst && !ALLOW_MOVES_BETWEEN_ROWS) || (!rowFirst && !ALLOW_MOVES_BETWEEN_COLS))
+        if((rowFirst && !Config::getInstance().allowMovesBetweenRows) || (!rowFirst && !Config::getInstance().allowMovesBetweenCols))
         {
             continue;
         }
@@ -1323,7 +1348,7 @@ std::tuple<std::optional<ParallelMove>,int,double> fillColumnHorizontally(ArrayA
         unsigned int colAODLimit = 0;
         fillDimensionDependantData(stateArray, compZone, rowFirst, rowDimCompZone, colDimCompZone, rows, cols, rowAODLimit, colAODLimit);
 
-        unsigned int aodLimit = rowAODLimit < AOD_TOTAL_LIMIT ? rowAODLimit : AOD_TOTAL_LIMIT;
+        unsigned int aodLimit = rowAODLimit < aodTotalLimit ? rowAODLimit : aodTotalLimit;
 
         std::vector<std::vector<size_t>> emptyCompZoneLocations;
         for(size_t j = colDimCompZone[0]; j < colDimCompZone[1]; j++)
@@ -1426,8 +1451,10 @@ std::tuple<std::optional<ParallelMove>,int,double> fillColumnHorizontally(ArrayA
                             atomLocationIndex++;
                         }
                     }
-                    double approxCost = MOVE_COST_OFFSET + costPerSubMove(dist - 1) + 
-                        costPerSubMove(abs((int)borderCol - (int)targetCol) - 1) + 2 * HALF_DIAG_STEP_COST;
+                    // 2 * half diagonal step cost
+                    double approxCost = Config::getInstance().moveCostOffset + costPerSubMove(dist - 1) + 
+                        costPerSubMove(abs((int)borderCol - (int)targetCol) - 1) + 2 * (Config::getInstance().moveCostOffsetSubmove + 
+                        Config::getInstance().moveCostScalingSqrt * M_4TH_ROOT_1_2 + Config::getInstance().moveCostScalingLinear * M_SQRT1_2);
                     if(!bestMove.has_value() || approxCost / filledSites < bestCostPerFilledGap)
                     {
                         ParallelMove move = ParallelMove::fromStartAndEnd(stateArray, start, end, logger);
@@ -1456,12 +1483,14 @@ std::tuple<std::optional<ParallelMove>,int,double> fillRowThroughSubspace(ArrayA
     size_t compZone[4], std::shared_ptr<spdlog::logger> logger,
     std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>>)
 {
+    unsigned int aodTotalLimit = Config::getInstance().aodTotalLimit;
+
     std::optional<ParallelMove> bestMove = std::nullopt;
     unsigned int bestFillableGaps = 0;
     double bestCostPerFilledGap = 0;
     for(bool rowFirst : {true, false})
     {
-        if((rowFirst && !ALLOW_MOVES_BETWEEN_ROWS) || (!rowFirst && !ALLOW_MOVES_BETWEEN_COLS))
+        if((rowFirst && !Config::getInstance().allowMovesBetweenRows) || (!rowFirst && !Config::getInstance().allowMovesBetweenCols))
         {
             continue;
         }
@@ -1532,12 +1561,14 @@ std::tuple<std::optional<ParallelMove>,int,double> fillRowThroughSubspace(ArrayA
                 {
                     fillableGaps = innerAODLimit;
                 }
-                if(fillableGaps > AOD_TOTAL_LIMIT)
+                if(fillableGaps > aodTotalLimit)
                 {
-                    fillableGaps = AOD_TOTAL_LIMIT;
+                    fillableGaps = aodTotalLimit;
                 }
                 
-                double minCost = MOVE_COST_OFFSET + costPerSubMove(outerDist) + costPerSubMove((fillableGaps - 1) / 2) + 2 * HALF_DIAG_STEP_COST;
+                // 2 * half diagonal step cost
+                double minCost = Config::getInstance().moveCostOffset + costPerSubMove(outerDist) + costPerSubMove((fillableGaps - 1) / 2) + 2 * (Config::getInstance().moveCostOffsetSubmove + 
+                        Config::getInstance().moveCostScalingSqrt * M_4TH_ROOT_1_2 + Config::getInstance().moveCostScalingLinear * M_SQRT1_2);
                 if(fillableGaps > 0 && (!bestMove.has_value() || minCost / fillableGaps < bestCostPerFilledGap))
                 {
                     unsigned int minFromLeft = fillableGaps < currentBorderAtomsRight ? 0 : fillableGaps - currentBorderAtomsRight;
@@ -1726,7 +1757,7 @@ std::tuple<std::optional<ParallelMove>,int,double> fillRowSidesDirectly(ArrayAcc
                     }
                 }
 
-                if(!lowestDistToNextGap.has_value() || (aodsUsed + lowestDistToNextGap.value() > AOD_TOTAL_LIMIT) || 
+                if(!lowestDistToNextGap.has_value() || (aodsUsed + lowestDistToNextGap.value() > Config::getInstance().aodTotalLimit) || 
                     (aodsUsed + lowestDistToNextGap.value() > innerAODLimit))
                 {
                     break;
@@ -1747,7 +1778,7 @@ std::tuple<std::optional<ParallelMove>,int,double> fillRowSidesDirectly(ArrayAcc
                     }
                 }
             }
-            double minCost = MOVE_COST_OFFSET + costPerSubMove((fillableGaps + 1) / 2);
+            double minCost = Config::getInstance().moveCostOffset + costPerSubMove((fillableGaps + 1) / 2);
             if(!bestMove.has_value() || (minCost / fillableGaps < bestCostPerFilledGap))
             {
                 ParallelMove::Step start;
@@ -1809,7 +1840,7 @@ std::tuple<std::optional<ParallelMove>,int,double> fillRowSidesDirectly(ArrayAcc
                     continue;
                 }
 
-                if(!ALLOW_MULTIPLE_MOVES_PER_ATOM && alreadyMoved.has_value())
+                if(!Config::getInstance().allowMultipleMovesPerAtom && alreadyMoved.has_value())
                 {
                     bool moveAllowed = true;
                     for(size_t row : start.rowSelection)
@@ -1933,7 +1964,7 @@ std::optional<std::vector<ParallelMove>> sortParallelInternal(
     std::shared_ptr<spdlog::logger> logger)
 {
     std::optional<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> alreadyMoved = std::nullopt;
-    if(!ALLOW_MULTIPLE_MOVES_PER_ATOM)
+    if(!Config::getInstance().allowMultipleMovesPerAtom)
     {
         alreadyMoved = Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>::Constant(
             stateArray.rows(), stateArray.cols(), false);

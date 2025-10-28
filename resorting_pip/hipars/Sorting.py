@@ -11,26 +11,23 @@ class Sorting:
     """
 
     def __init__(self):
+        self.config = resorting_cpp.Config()
         """Constructor method
         """
     
-    def configure_log(self, log_file_name : str = None, parallel_logger_name : str = None, sequential_logger_name : str = None):
-        """Function for configuring the logger
+    def read_config_file(self, file_path):
+        """Function to pass a config file for the underlying sorting library
 
-        :param log_file_name: The name of the log file, defaults to None
-        :type log_file_name: str, optional
-        :param parallel_logger_name: The name of the parallel logger, defaults to None
-        :type parallel_logger_name: str, optional
-        :param sequential_logger_name: The name of the sequential logger, defaults to None
-        :type sequential_logger_name: str, optional
+        :param file_path: The path of the config file
+        :type file_path: str
+        :raises TypeError: file_path must be a str
+        :return: A list of moves to sort array or None if sorting has failed. A move contains .distance, .init_dir, and .sites_list, which is a list of coordinate pairs to traverse
+        :rtype: bool, optional
         """
-        config = resorting_cpp.Config()
-        if log_file_name:
-            config.logFileName = log_file_name
-        if parallel_logger_name:
-            config.sequentialLoggerName = parallel_logger_name
-        if sequential_logger_name:
-            config.parallelLoggerName = sequential_logger_name
+        if not isinstance(file_path, str):
+            raise TypeError("file_path must be a str")
+        return self.config.readConfig(file_path)
+
 
     def sort_sequentially(self, state_array, comp_zone_row_range, comp_zone_col_range):
         """Function for sorting sequentially
@@ -72,7 +69,7 @@ class Sorting:
             raise TypeError("state_array must be dtype bool")
         return resorting_cpp.sortParallel(state_array, *comp_zone_row_range, *comp_zone_col_range)
     
-    def sort_parallel_lattice(self, state_array, comp_zone_row_range, comp_zone_col_range, target_geometry):
+    def sort_parallel_lattice_greedy(self, state_array, comp_zone_row_range, comp_zone_col_range, target_geometry):
         """Function for sorting in parallel
         
         :param state_array: The array of boolean values to be sorted
@@ -98,7 +95,7 @@ class Sorting:
             raise TypeError("state_array must be numpy bool array")
         if not target_geometry.dtype == bool:
             raise TypeError("state_array must be dtype bool")
-        return resorting_cpp.sortLatticeGeometriesParallel(state_array, *comp_zone_row_range, *comp_zone_col_range, target_geometry)
+        return resorting_cpp.sortLatticeGreedyParallel(state_array, *comp_zone_row_range, *comp_zone_col_range, target_geometry)
     
     def sort_parallel_lattice_by_row(self, state_array, comp_zone_row_range, comp_zone_col_range, target_geometry):
         """Function for sorting lattice geometries row by row

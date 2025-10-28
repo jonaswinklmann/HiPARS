@@ -1,5 +1,4 @@
-#include "sortLatticeGeometries.hpp"
-#include "sortParallel.hpp"
+#include "sortLattice.hpp"
 
 #include <algorithm>
 #include <fstream>
@@ -39,7 +38,7 @@ bool isInCompZone(int row, int col, size_t compZoneRowStart,
 
 double moveCost(const std::vector<std::tuple<bool,size_t,int>>& path)
 {
-    double cost = MOVE_COST_OFFSET;
+    double cost = Config::getInstance().moveCostOffset;
     bool verticalSegment = false;
     std::map<size_t,double> segmentDist;
     bool first = true;
@@ -61,7 +60,7 @@ double moveCost(const std::vector<std::tuple<bool,size_t,int>>& path)
             verticalSegment = vertical;
             segmentDist.clear();
         }
-        segmentDist[index] += (double)dist / 2 * (vertical ? ROW_SPACING : COL_SPACING); // / 2 Because the path is expressed in units of half steps
+        segmentDist[index] += (double)dist / 2 * (vertical ? Config::getInstance().rowSpacing : Config::getInstance().columnSpacing); // / 2 Because the path is expressed in units of half steps
     }
     for(auto& v : segmentDist)
     {
@@ -74,9 +73,9 @@ double moveCost(const std::vector<std::tuple<bool,size_t,int>>& path)
 
 Eigen::Array<bool,Eigen::Dynamic,Eigen::Dynamic> generateMask(double distance, double spacingFraction)
 {
-    int maskRowDist = distance / (ROW_SPACING * spacingFraction);
+    int maskRowDist = distance / (Config::getInstance().rowSpacing * spacingFraction);
     int maskRows = 2 * maskRowDist + 1;
-    int maskColDist = distance / (COL_SPACING * spacingFraction);
+    int maskColDist = distance / (Config::getInstance().columnSpacing * spacingFraction);
     int maskCols = 2 * maskColDist + 1;
     Eigen::Array<bool,Eigen::Dynamic,Eigen::Dynamic> mask(maskRows, maskCols);
     
@@ -84,8 +83,8 @@ Eigen::Array<bool,Eigen::Dynamic,Eigen::Dynamic> generateMask(double distance, d
     {
         for(int c = 0; c < maskCols; c++)
         {
-            mask(r,c) = pythagorasDist((r - maskRowDist) * (ROW_SPACING * spacingFraction), 
-                (c - maskColDist) * (COL_SPACING * spacingFraction)) < distance;
+            mask(r,c) = pythagorasDist((r - maskRowDist) * (Config::getInstance().rowSpacing * spacingFraction), 
+                (c - maskColDist) * (Config::getInstance().columnSpacing * spacingFraction)) < distance;
         }
     }
 
@@ -94,7 +93,7 @@ Eigen::Array<bool,Eigen::Dynamic,Eigen::Dynamic> generateMask(double distance, d
 
 Eigen::Array<unsigned int,Eigen::Dynamic,Eigen::Dynamic> generatePathway(size_t borderRows, size_t borderCols, 
     const py::EigenDRef<const Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &occupancy,
-    double distFromOcc = RECOMMENDED_DIST_FROM_OCC_SITES, double distFromEmpty = RECOMMENDED_DIST_FROM_EMPTY_SITES)
+    double distFromOcc = Config::getInstance().recommendedDistFromOccSites, double distFromEmpty = Config::getInstance().recommendedDistFromEmptySites)
 {
     size_t pathwayRows = 2 * occupancy.rows() - 1 + 2 * borderRows;
     size_t pathwayCols = 2 * occupancy.cols() - 1 + 2 * borderCols;
@@ -255,6 +254,9 @@ std::optional<std::tuple<std::vector<size_t>,std::vector<size_t>,std::vector<std
     size_t borderRows, size_t borderCols, std::set<std::tuple<size_t,size_t>> cols, std::set<std::tuple<size_t,size_t>> rows,
     double bestFilledPerCost, std::shared_ptr<spdlog::logger> logger)
 {
+    double rowSpacing = Config::getInstance().rowSpacing;
+    double colSpacing = Config::getInstance().columnSpacing;
+
     // Stores possible states after each movement step
     // A state contains the vector of row and col tones
     // Also it contains the list of moves that have been performed
@@ -320,6 +322,7 @@ std::optional<std::tuple<std::vector<size_t>,std::vector<size_t>,std::vector<std
         {
             for(bool vertical : {true, false})
             {
+                double halfSpacing = vertical ? (rowSpacing / 2.) : (colSpacing/ 2.);
                 const auto& changingState = vertical ? rowState : colState;
                 const auto& otherState = vertical ? colState : rowState;
                 for(size_t toneIndex = 0; toneIndex < changingState.size(); toneIndex++)
@@ -330,8 +333,7 @@ std::optional<std::tuple<std::vector<size_t>,std::vector<size_t>,std::vector<std
                         for(int dir : {-1, 1})
                         {
                             bool movedIntoPenalizedPathway = false;
-                            int maxDistIntoPenalizedPathway = vertical ? MAX_SUBMOVE_DIST_IN_PENALIZED_AREA / HALF_ROW_SPACING : 
-                                (MAX_SUBMOVE_DIST_IN_PENALIZED_AREA / HALF_COL_SPACING);
+                            int maxDistIntoPenalizedPathway = Config::getInstance().maxSubmoveDistInPenalizedArea / halfSpacing;
                             for(int dist = 1;;dist++)
                             {
                                 bool propagateState = true;
@@ -361,8 +363,8 @@ std::optional<std::tuple<std::vector<size_t>,std::vector<size_t>,std::vector<std
                                     else if(labelledPathway(borderRows + r, borderCols + c) == 0)
                                     {
                                         if(penalizedPathway(borderRows + r, borderCols + c) <= 
-                                            (pythagorasDist((r - (int)initialRows[vertical ? toneIndex : otherToneIndex]) * ROW_SPACING, 
-                                            (c - (int)initialCols[vertical ? otherToneIndex : toneIndex]) * COL_SPACING) < 2 * MIN_DIST_FROM_OCC_SITES ? 1 : 0))
+                                            (pythagorasDist((r - (int)initialRows[vertical ? toneIndex : otherToneIndex]) * rowSpacing, 
+                                            (c - (int)initialCols[vertical ? otherToneIndex : toneIndex]) * colSpacing) < 2 * Config::getInstance().minDistFromOccSites ? 1 : 0))
                                         {
                                             movedIntoPenalizedPathway = true;
                                         }
@@ -534,6 +536,10 @@ std::optional<std::tuple<ParallelMove,double>> findDistOneMove(
     size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd,
     size_t borderRows, size_t borderCols, std::shared_ptr<spdlog::logger> logger)
 {
+    double minDistFromOccSites = Config::getInstance().minDistFromOccSites;
+    double rowSpacing = Config::getInstance().rowSpacing;
+    double colSpacing = Config::getInstance().columnSpacing;
+    
     std::vector<RowBitMask> rowsToMoveIndexDown;
     std::vector<RowBitMask> rowsToMoveIndexUp;
     std::vector<RowBitMask> colsToMoveIndexDown;
@@ -565,29 +571,29 @@ std::optional<std::tuple<ParallelMove,double>> findDistOneMove(
         {
             if(stateArray(row + compZoneRowStart, col + compZoneColStart) && !targetGeometry(row, col) && 
                 penalizedPathway(borderRows + 2 * (row + compZoneRowStart), borderCols + 2 * (col + compZoneColStart)) <= 
-                (MIN_DIST_FROM_OCC_SITES > 0 ? 1 : 0) && !unusableAtoms.contains(std::tuple(row + compZoneRowStart, col + compZoneColStart)))
+                (minDistFromOccSites > 0 ? 1 : 0) && !unusableAtoms.contains(std::tuple(row + compZoneRowStart, col + compZoneColStart)))
             {
                 if(row > 0 && !stateArray(row - 1 + compZoneRowStart, col + compZoneColStart) && targetGeometry(row - 1, col) && 
                     penalizedPathway(borderRows + 2 * (row - 1 + compZoneRowStart), borderCols + 2 * (col + compZoneColStart)) <= 
-                    (MIN_DIST_FROM_OCC_SITES > ROW_SPACING ? 1 : 0))
+                    (minDistFromOccSites > rowSpacing ? 1 : 0))
                 {
                     rowsToMoveIndexDown[col].set(row, true);
                 }
                 if(row < targetGeometry.rows() - 1 && !stateArray(row + 1 + compZoneRowStart, col + compZoneColStart) && targetGeometry(row + 1, col) && 
                     penalizedPathway(borderRows + 2 * (row + 1 + compZoneRowStart), borderCols + 2 * (col + compZoneColStart)) <= 
-                    (MIN_DIST_FROM_OCC_SITES > ROW_SPACING ? 1 : 0))
+                    (minDistFromOccSites > rowSpacing ? 1 : 0))
                 {
                     rowsToMoveIndexUp[col].set(row, true);
                 }
                 if(col > 0 && !stateArray(row + compZoneRowStart, col - 1 + compZoneColStart) && targetGeometry(row, col - 1) && 
                     penalizedPathway(borderRows + 2 * (row + compZoneRowStart), borderCols + 2 * (col - 1 + compZoneColStart)) <= 
-                    (MIN_DIST_FROM_OCC_SITES > COL_SPACING ? 1 : 0))
+                    (minDistFromOccSites > colSpacing ? 1 : 0))
                 {
                     colsToMoveIndexDown[row].set(col, true);
                 }
                 if(col < targetGeometry.cols() - 1 && !stateArray(row + compZoneRowStart, col + 1 + compZoneColStart) && targetGeometry(row, col + 1) && 
                     penalizedPathway(borderRows + 2 * (row + compZoneRowStart), borderCols + 2 * (col + 1 + compZoneColStart)) <= 
-                    (MIN_DIST_FROM_OCC_SITES > COL_SPACING ? 1 : 0))
+                    (minDistFromOccSites > colSpacing ? 1 : 0))
                 {
                     colsToMoveIndexUp[row].set(col, true);
                 }
@@ -853,6 +859,9 @@ std::optional<std::tuple<ParallelMove,double>> findComplexMove(
     size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd,
     size_t borderRows, size_t borderCols, double bestIntPerCost, std::shared_ptr<spdlog::logger> logger)
 {
+    double rowSpacing = Config::getInstance().rowSpacing;
+    double colSpacing = Config::getInstance().columnSpacing;
+    
     std::optional<std::vector<size_t>> bestMoveStartRows = std::nullopt;
     std::optional<std::vector<size_t>> bestMoveStartCols = std::nullopt;
     std::optional<std::vector<std::tuple<bool,size_t,int>>> bestMovePath = std::nullopt;
@@ -875,7 +884,7 @@ std::optional<std::tuple<ParallelMove,double>> findComplexMove(
 
     std::vector<std::tuple<size_t,size_t,size_t,size_t>> possibleMoves;
 
-    auto occMask = generateMask(MIN_DIST_FROM_OCC_SITES, 0.5);
+    auto occMask = generateMask(Config::getInstance().minDistFromOccSites, 0.5);
     Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic> localAccessibility(occMask.rows() + 2, occMask.cols() + 2);
 
     for(size_t r = 0; r < (size_t)stateArray.rows(); r++)
@@ -959,7 +968,7 @@ std::optional<std::tuple<ParallelMove,double>> findComplexMove(
     {
         for(size_t tCol = 0; tCol < (size_t)stateArray.cols(); tCol++)
         {
-            double minCost = MOVE_COST_OFFSET + costPerSubMove(abs((int)tCol - (int)col) * COL_SPACING);
+            double minCost = Config::getInstance().moveCostOffset + costPerSubMove(abs((int)tCol - (int)col) * colSpacing);
             if(movableRowsPerTargetColPerSourceCol[col][tCol].size() > 0 && (movableRowsPerTargetColPerSourceCol[col][tCol].size() / minCost) > bestIntPerCost)
             {
                 std::vector<std::tuple<double,std::tuple<size_t,size_t>>> elemDist;
@@ -981,7 +990,7 @@ std::optional<std::tuple<ParallelMove,double>> findComplexMove(
                 for(size_t usedRowCount = 0; usedRowCount < elemDist.size(); usedRowCount++)
                 {
                     currentSubset.insert(std::get<1>(elemDist[usedRowCount]));
-                    double localCountPerCost = (usedRowCount + 1) / (minCost + costPerSubMove(std::get<0>(elemDist[usedRowCount]) * ROW_SPACING));
+                    double localCountPerCost = (usedRowCount + 1) / (minCost + costPerSubMove(std::get<0>(elemDist[usedRowCount]) * rowSpacing));
                     if(localCountPerCost > intPerCost)
                     {
                         intPerCost = localCountPerCost;
@@ -1132,21 +1141,21 @@ std::optional<ParallelMove> checkIntersectingPathwayMove(
     {
         if(vertical)
         {
-            if(bestMovableAtoms > AOD_ROW_LIMIT)
+            if(bestMovableAtoms > Config::getInstance().aodRowLimit)
             {
-                bestMovableAtoms = AOD_ROW_LIMIT;
+                bestMovableAtoms = Config::getInstance().aodRowLimit;
             }
         }
         else
         {
-            if(bestMovableAtoms > AOD_COL_LIMIT)
+            if(bestMovableAtoms > Config::getInstance().aodColLimit)
             {
-                bestMovableAtoms = AOD_COL_LIMIT;
+                bestMovableAtoms = Config::getInstance().aodColLimit;
             }
         }
-        if(bestMovableAtoms > AOD_TOTAL_LIMIT)
+        if(bestMovableAtoms > Config::getInstance().aodTotalLimit)
         {
-            bestMovableAtoms = AOD_TOTAL_LIMIT;
+            bestMovableAtoms = Config::getInstance().aodTotalLimit;
         }
         const auto& [pathway, otherPathway] = bestPathways.value();
         ParallelMove move;
@@ -1240,6 +1249,9 @@ std::optional<std::tuple<ParallelMove, double>> findPathwayMove(
     size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd,
     size_t borderRows, size_t borderCols, double bestIntPerCost, std::shared_ptr<spdlog::logger> logger)
 {
+    double halfRowSpacing = Config::getInstance().rowSpacing/ 2.;
+    double halfColSpacing = Config::getInstance().columnSpacing / 2.;
+
     double bestLocalBenefitPerCost = 0;
     std::optional<ParallelMove> bestMove = std::nullopt;
     unsigned int bestToneCount = 0;
@@ -1418,7 +1430,7 @@ std::optional<std::tuple<ParallelMove, double>> findPathwayMove(
                             break;
                         }
                     }
-                    if((vertical ? HALF_COL_SPACING : HALF_ROW_SPACING) * pDist < MIN_DIST_FROM_OCC_SITES)
+                    if((vertical ? halfColSpacing : halfRowSpacing) * pDist < Config::getInstance().minDistFromOccSites)
                     {
                         if(penalizedPathway(borderRows + shiftedRow, borderCols + shiftedCol) > 1)
                         {
@@ -1450,8 +1462,8 @@ std::optional<std::tuple<ParallelMove, double>> findPathwayMove(
                                             break;
                                         }
                                     }
-                                    if(pythagorasDist((double)(twiceShiftedRow - 2 * row) * HALF_ROW_SPACING, 
-                                        (double)(twiceShiftedCol - 2 * col) * HALF_COL_SPACING) < MIN_DIST_FROM_OCC_SITES)
+                                    if(pythagorasDist((double)(twiceShiftedRow - 2 * row) * halfRowSpacing, 
+                                        (double)(twiceShiftedCol - 2 * col) * halfColSpacing) < Config::getInstance().minDistFromOccSites)
                                     {
                                         if(penalizedPathway(borderRows + twiceShiftedRow, borderCols + twiceShiftedCol) > 1)
                                         {
@@ -1679,14 +1691,14 @@ std::optional<std::tuple<ParallelMove, double>> findPathwayMove(
             }
             if(bestLocalToneCount > 0)
             {
-                unsigned int maxTones = AOD_TOTAL_LIMIT;
-                if(vertical && maxTones > AOD_ROW_LIMIT)
+                unsigned int maxTones = Config::getInstance().aodTotalLimit;
+                if(vertical && maxTones > Config::getInstance().aodRowLimit)
                 {
-                    maxTones = AOD_ROW_LIMIT;
+                    maxTones = Config::getInstance().aodRowLimit;
                 }
-                else if(!vertical && maxTones > AOD_COL_LIMIT)
+                else if(!vertical && maxTones > Config::getInstance().aodColLimit)
                 {
-                    maxTones = AOD_COL_LIMIT;
+                    maxTones = Config::getInstance().aodColLimit;
                 }
                 if(bestLocalToneCount > maxTones)
                 {
@@ -1694,7 +1706,7 @@ std::optional<std::tuple<ParallelMove, double>> findPathwayMove(
                 }
                 bool withinCompZone = bestStartI >= (int)(vertical ? compZoneColStart : compZoneRowStart) && bestStartI < (int)(vertical ? compZoneColEnd : compZoneRowEnd);
                 double maxBenefitPerCost = bestLocalToneCount * (VALUE_FILLED_DESIRED + (withinCompZone ? VALUE_USED_UNDESIRED : 0)) / 
-                    (MOVE_COST_OFFSET + costPerSubMove(abs((int)i - bestStartI)) + costPerSubMove(abs((int)i - bestEndI)));
+                    (Config::getInstance().moveCostOffset + costPerSubMove(abs((int)i - bestStartI)) + costPerSubMove(abs((int)i - bestEndI)));
                 if(maxBenefitPerCost > bestLocalBenefitPerCost && maxBenefitPerCost > bestIntPerCost && bestLocalToneCount > 0)
                 {
                     ParallelMove move;
@@ -1874,7 +1886,7 @@ bool handleUnusableSection(std::vector<std::tuple<bool,int>>::iterator unusableS
         }
         first = false;
     
-        if(usable && !ALLOW_MULTIPLE_MOVES_PER_ATOM && sourceLocation < firstFinalLocation)
+        if(usable && !Config::getInstance().allowMultipleMovesPerAtom && sourceLocation < firstFinalLocation)
         {
             logger->warn("Atom may not be moved to non-target position as another move would not be allowed");
             return false;
@@ -1908,7 +1920,7 @@ bool handleUnusableSection(std::vector<std::tuple<bool,int>>::iterator unusableS
         }
         first = false;
     
-        if(usable && !ALLOW_MULTIPLE_MOVES_PER_ATOM && sourceLocation > lastFinalLocation)
+        if(usable && !Config::getInstance().allowMultipleMovesPerAtom && sourceLocation > lastFinalLocation)
         {
             logger->warn("Atom may not be moved to non-target position as another move would not be allowed");
             return false;
@@ -2100,7 +2112,7 @@ std::optional<std::tuple<std::vector<std::tuple<int,int>>, double>> analyzeLinea
                 bestUsedAtomsAndTargetSites = usedAtomsAndTargetSites;
             }
 
-            if(firstAtomUsable && !ALLOW_MULTIPLE_MOVES_PER_ATOM)
+            if(firstAtomUsable && !Config::getInstance().allowMultipleMovesPerAtom)
             {
                 minimumTargetSpot = firstAtomLocation;
             }
@@ -2167,14 +2179,14 @@ std::optional<std::tuple<ParallelMove, double>> findLinearMove(
     double bestBenefitPerCost = 0;
     for(bool vertical : {true, false})
     {
-        unsigned int maxTones = AOD_TOTAL_LIMIT;
-        if(vertical && maxTones > AOD_ROW_LIMIT)
+        unsigned int maxTones = Config::getInstance().aodTotalLimit;
+        if(vertical && maxTones > Config::getInstance().aodRowLimit)
         {
-            maxTones = AOD_ROW_LIMIT;
+            maxTones = Config::getInstance().aodRowLimit;
         }
-        else if(!vertical && maxTones > AOD_COL_LIMIT)
+        else if(!vertical && maxTones > Config::getInstance().aodColLimit)
         {
-            maxTones = AOD_COL_LIMIT;
+            maxTones = Config::getInstance().aodColLimit;
         }
 
         size_t outerStartIndex, outerEndIndex, innerCompZoneStart, innerCompZoneEnd, innerEndIndex;
@@ -2195,8 +2207,8 @@ std::optional<std::tuple<ParallelMove, double>> findLinearMove(
             innerEndIndex = stateArray.cols();
         }
 
-        int blockingDistAlongIndex = ceil((double)MIN_DIST_FROM_OCC_SITES / 
-            (vertical ? (double)ROW_SPACING : (double)COL_SPACING)) - 1;
+        int blockingDistAlongIndex = ceil(Config::getInstance().minDistFromOccSites / 
+            (vertical ? Config::getInstance().rowSpacing : Config::getInstance().columnSpacing)) - 1;
         size_t innerDimMax = vertical ? stateArray.rows() : stateArray.cols();
         for(size_t outerIndex = outerStartIndex; outerIndex < outerEndIndex; outerIndex++)
         {
@@ -2269,7 +2281,7 @@ std::optional<std::tuple<ParallelMove, double>> findLinearMove(
                         if(usable)
                         {
                             if(inCompZone && targetGeometry(row - compZoneRowStart, col - compZoneColStart) && 
-                                !ALLOW_MULTIPLE_MOVES_PER_ATOM)
+                                !Config::getInstance().allowMultipleMovesPerAtom)
                             {
                                 terminateSection = true;
                                 if(inSection)
@@ -2378,7 +2390,7 @@ std::optional<std::tuple<ParallelMove, double>> findLinearMove(
                 }
             }
 
-            double benefitPerCost = totalBenefit / (MOVE_COST_OFFSET + costPerSubMove(maxShiftDist));
+            double benefitPerCost = totalBenefit / (Config::getInstance().moveCostOffset + costPerSubMove(maxShiftDist));
             if(benefitPerCost > bestBenefitPerCost)
             {
                 ParallelMove move;
@@ -2523,6 +2535,9 @@ std::optional<std::tuple<ParallelMove,double>> removeAtomsInBorderPathway(
     size_t compZoneColStart, size_t compZoneColEnd, size_t borderRows, size_t borderCols,
     std::vector<ParallelMove>& moveList, std::shared_ptr<spdlog::logger> logger)
 {
+    double rowSpacing = Config::getInstance().rowSpacing;
+    double colSpacing = Config::getInstance().columnSpacing;
+
     auto startTime = std::chrono::steady_clock::now();
     // Generate pathway only for usable atoms. Since removed atoms are discarded, we don't care about heating -> Penalized pathway
     Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> stateArrayCopy = stateArray;
@@ -2531,7 +2546,7 @@ std::optional<std::tuple<ParallelMove,double>> removeAtomsInBorderPathway(
         stateArrayCopy(r,c) = false;
     }
 
-    auto pathway = generatePathway(borderRows, borderCols, stateArrayCopy, MIN_DIST_FROM_OCC_SITES, 0);
+    auto pathway = generatePathway(borderRows, borderCols, stateArrayCopy, Config::getInstance().minDistFromOccSites, 0);
     auto [labelledPathway, labelCount] = labelPathway(pathway);
     
     // Find straight pathways to the outside. Removed atoms will be extracted through here
@@ -2683,7 +2698,7 @@ std::optional<std::tuple<ParallelMove,double>> removeAtomsInBorderPathway(
                     else if(currRow % 2 == 0 && currCol % 2 == 0 && stateArray(currRow / 2, currCol / 2))
                     {
                         hasCrossedAtom = true;
-                        double newCost = cost + costPerSubMove(dist * (nextMoveVertical ? ROW_SPACING : COL_SPACING));
+                        double newCost = cost + costPerSubMove(dist * (nextMoveVertical ? rowSpacing : colSpacing));
                         if(sitesPath(currRow, currCol).has_value())
                         {
                             if(newCost < std::get<2>(sitesPath(currRow, currCol).value()) && std::get<3>(sitesPath(currRow, currCol).value()) == moveDist)
@@ -2712,7 +2727,7 @@ std::optional<std::tuple<ParallelMove,double>> removeAtomsInBorderPathway(
                     }
                     else if(!hasCrossedAtom && currentlyMovableAtoms.empty())
                     {
-                        double newCost = cost + costPerSubMove(dist * (nextMoveVertical ? ROW_SPACING : COL_SPACING));
+                        double newCost = cost + costPerSubMove(dist * (nextMoveVertical ? rowSpacing : colSpacing));
                         if(sitesPath(currRow, currCol).has_value())
                         {
                             if(newCost < std::get<2>(sitesPath(currRow, currCol).value()) && std::get<3>(sitesPath(currRow, currCol).value()) == moveDist)
@@ -2949,13 +2964,13 @@ bool updateDataStructuresAfterFindingMove(
     size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd, 
     std::shared_ptr<spdlog::logger> logger)
 {
-    auto occMask = generateMask(RECOMMENDED_DIST_FROM_OCC_SITES, 0.5);
+    auto occMask = generateMask(Config::getInstance().recommendedDistFromOccSites, 0.5);
     Eigen::Index halfOccRows = occMask.rows() / 2;
     Eigen::Index halfOccCols = occMask.cols() / 2;
-    auto emptyMask = generateMask(RECOMMENDED_DIST_FROM_EMPTY_SITES, 0.5);
+    auto emptyMask = generateMask(Config::getInstance().recommendedDistFromEmptySites, 0.5);
     Eigen::Index halfEmptyRows = emptyMask.rows() / 2;
     Eigen::Index halfEmptyCols = emptyMask.cols() / 2;
-    auto penalizedOccMask = generateMask(MIN_DIST_FROM_OCC_SITES, 0.5);
+    auto penalizedOccMask = generateMask(Config::getInstance().minDistFromOccSites, 0.5);
     Eigen::Index halfPOccRows = penalizedOccMask.rows() / 2;
     Eigen::Index halfPOccCols = penalizedOccMask.cols() / 2;
 
@@ -3031,7 +3046,7 @@ std::tuple<std::set<std::tuple<size_t,size_t>>,std::set<std::tuple<size_t,size_t
     size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd, 
     std::shared_ptr<spdlog::logger> logger)
 {
-    auto usabilityPreventingNeighborhoodMask = generateMask(MIN_DIST_FROM_OCC_SITES);
+    auto usabilityPreventingNeighborhoodMask = generateMask(Config::getInstance().minDistFromOccSites);
     int usabilityPreventingNeighborhoodMaskRowDist = usabilityPreventingNeighborhoodMask.rows() / 2;
     int usabilityPreventingNeighborhoodMaskColDist = usabilityPreventingNeighborhoodMask.cols() / 2;
     usabilityPreventingNeighborhoodMask(usabilityPreventingNeighborhoodMaskRowDist, usabilityPreventingNeighborhoodMaskColDist) = false;
@@ -3157,12 +3172,12 @@ std::vector<ParallelMove> removeAllDirectlyRemovableUnusableAtoms(
         stateArrayCopy(r,c) = false;
     }
 
-    auto pathway = generatePathway(borderRows, borderCols, stateArrayCopy, MIN_DIST_FROM_OCC_SITES, 0);
+    auto pathway = generatePathway(borderRows, borderCols, stateArrayCopy, Config::getInstance().minDistFromOccSites, 0);
 
     for(bool traverseRow : {true,false})
     {
-        if((traverseRow && MIN_DIST_FROM_OCC_SITES <= COL_SPACING) || 
-            (!traverseRow && MIN_DIST_FROM_OCC_SITES <= ROW_SPACING))
+        if((traverseRow && Config::getInstance().minDistFromOccSites <= Config::getInstance().columnSpacing) || 
+            (!traverseRow && Config::getInstance().minDistFromOccSites <= Config::getInstance().rowSpacing))
         {
             for(bool lowToHigh : {true,false})
             {
@@ -3213,10 +3228,10 @@ std::vector<ParallelMove> removeAllDirectlyRemovableUnusableAtoms(
                     }
                     std::vector<size_t> usedIndices;
                     unsigned int selectedIndices = 0;
-                    unsigned int maxIndicesAlongBorder = traverseRow ? AOD_COL_LIMIT : AOD_ROW_LIMIT;
-                    if(AOD_TOTAL_LIMIT < maxIndicesAlongBorder)
+                    unsigned int maxIndicesAlongBorder = traverseRow ? Config::getInstance().aodColLimit : Config::getInstance().aodRowLimit;
+                    if(Config::getInstance().aodTotalLimit < maxIndicesAlongBorder)
                     {
-                        maxIndicesAlongBorder = AOD_TOTAL_LIMIT;
+                        maxIndicesAlongBorder = Config::getInstance().aodTotalLimit;
                     }
                     for(size_t alongBorder = 0; alongBorder < alongBorderMaxIndex && selectedIndices < maxIndicesAlongBorder; alongBorder++)
                     {
@@ -3227,10 +3242,10 @@ std::vector<ParallelMove> removeAllDirectlyRemovableUnusableAtoms(
                             selectedIndices++;
                         }
                     }
-                    unsigned int maxIndicesInward = traverseRow ? AOD_ROW_LIMIT : AOD_COL_LIMIT;
-                    if(maxIndicesInward * selectedIndices > AOD_TOTAL_LIMIT)
+                    unsigned int maxIndicesInward = traverseRow ? Config::getInstance().aodRowLimit : Config::getInstance().aodColLimit;
+                    if(maxIndicesInward * selectedIndices > Config::getInstance().aodTotalLimit)
                     {
-                        maxIndicesInward = AOD_TOTAL_LIMIT / selectedIndices;
+                        maxIndicesInward = Config::getInstance().aodTotalLimit / selectedIndices;
                     }
                     std::vector<int> inwardIndicesRequired;
                     for(int inwardDist = 0; inwardDist <= maxMinDist; inwardDist++)
@@ -3435,7 +3450,7 @@ bool findAndExecuteMoves(Eigen::Ref<Eigen::Array<unsigned int,Eigen::Dynamic,Eig
 bool checkTargetGeometryFeasibility(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &targetGeometry, 
     std::shared_ptr<spdlog::logger> logger)
 {
-    auto usabilityPreventingNeighborhoodMask = generateMask(MIN_DIST_FROM_OCC_SITES);
+    auto usabilityPreventingNeighborhoodMask = generateMask(Config::getInstance().minDistFromOccSites);
     int usabilityPreventingNeighborhoodMaskRowDist = usabilityPreventingNeighborhoodMask.rows() / 2;
     int usabilityPreventingNeighborhoodMaskColDist = usabilityPreventingNeighborhoodMask.cols() / 2;
     usabilityPreventingNeighborhoodMask(usabilityPreventingNeighborhoodMaskRowDist, usabilityPreventingNeighborhoodMaskColDist) = false;
@@ -3473,12 +3488,12 @@ bool checkTargetGeometryFeasibility(py::EigenDRef<Eigen::Array<bool, Eigen::Dyna
         }
     }
 
-    size_t borderRows = MIN_DIST_FROM_OCC_SITES / HALF_ROW_SPACING + 2;
-    size_t borderCols = MIN_DIST_FROM_OCC_SITES / HALF_COL_SPACING + 2;
-    auto pathway = generatePathway(borderRows, borderCols, targetGeometry, MIN_DIST_FROM_OCC_SITES, 0);
+    size_t borderRows = Config::getInstance().minDistFromOccSites / (Config::getInstance().rowSpacing / 2.) + 2;
+    size_t borderCols = Config::getInstance().minDistFromOccSites / (Config::getInstance().columnSpacing / 2.) + 2;
+    auto pathway = generatePathway(borderRows, borderCols, targetGeometry, Config::getInstance().minDistFromOccSites, 0);
     auto [labelledPathway, labelCount] = labelPathway(pathway);
 
-    auto occMask = generateMask(MIN_DIST_FROM_OCC_SITES, 0.5);
+    auto occMask = generateMask(Config::getInstance().minDistFromOccSites, 0.5);
     Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic> localAccessibility(occMask.rows() + 2, occMask.cols() + 2);
     for(Eigen::Index r = 0; r < targetGeometry.rows(); r++)
     {
@@ -3610,13 +3625,17 @@ bool createMinimallyInvasiveAccessPathway(py::EigenDRef<Eigen::Array<bool, Eigen
     size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd,
     std::vector<ParallelMove>& moveList, unsigned int count, std::shared_ptr<spdlog::logger> logger)
 {
-    bool pathwayVertical = COL_SPACING > ROW_SPACING;
-    double spacing = pathwayVertical ? COL_SPACING : ROW_SPACING;
-    if(2 * MIN_DIST_FROM_OCC_SITES < spacing)
+    unsigned int aodRowLimit = Config::getInstance().aodRowLimit;
+    unsigned int aodColLimit = Config::getInstance().aodColLimit;
+    unsigned int aodTotalLimit = Config::getInstance().aodTotalLimit;
+
+    bool pathwayVertical = Config::getInstance().columnSpacing > Config::getInstance().rowSpacing;
+    double spacing = pathwayVertical ? Config::getInstance().columnSpacing : Config::getInstance().rowSpacing;
+    if(2 * Config::getInstance().minDistFromOccSites < spacing)
     {
         return true;
     }
-    unsigned int width = ceil((double)(2 * MIN_DIST_FROM_OCC_SITES) / spacing) - 1;
+    unsigned int width = ceil((double)(2 * Config::getInstance().minDistFromOccSites) / spacing) - 1;
     size_t compZoneWidth = pathwayVertical ? (compZoneColEnd - compZoneColStart) : (compZoneRowEnd - compZoneRowStart);
     if(width > compZoneWidth)
     {
@@ -3803,10 +3822,10 @@ bool createMinimallyInvasiveAccessPathway(py::EigenDRef<Eigen::Array<bool, Eigen
                 requiredIndicesAlongBorder++;
             }
         }
-        unsigned int maxAlongBorderIndices = pathwayVertical ? AOD_COL_LIMIT : AOD_ROW_LIMIT;
-        if(AOD_TOTAL_LIMIT < maxAlongBorderIndices)
+        unsigned int maxAlongBorderIndices = pathwayVertical ? aodColLimit : aodRowLimit;
+        if(aodTotalLimit < maxAlongBorderIndices)
         {
-            maxAlongBorderIndices = AOD_TOTAL_LIMIT;
+            maxAlongBorderIndices = aodTotalLimit;
         }
         if(requiredIndicesAlongBorder == 0)
         {
@@ -3819,10 +3838,10 @@ bool createMinimallyInvasiveAccessPathway(py::EigenDRef<Eigen::Array<bool, Eigen
         {
             size_t usedIndicesAlongBorder = requiredIndicesAlongBorder / alongBorderSegments + 
                 ((alongBorderSeg < requiredIndicesAlongBorder % alongBorderSegments) ? 1 : 0);
-            unsigned int maxInwardIndices = pathwayVertical ? AOD_ROW_LIMIT : AOD_COL_LIMIT;
-            if(usedIndicesAlongBorder * maxInwardIndices > AOD_TOTAL_LIMIT)
+            unsigned int maxInwardIndices = pathwayVertical ? aodRowLimit : aodColLimit;
+            if(usedIndicesAlongBorder * maxInwardIndices > aodTotalLimit)
             {
-                maxInwardIndices = AOD_TOTAL_LIMIT / usedIndicesAlongBorder;
+                maxInwardIndices = aodTotalLimit / usedIndicesAlongBorder;
             }
             std::vector<double> alongBorderIndices;
             for(; alongBorderIndices.size() < usedIndicesAlongBorder && 
@@ -3917,13 +3936,13 @@ bool createMinimallyInvasiveAccessPathway(py::EigenDRef<Eigen::Array<bool, Eigen
     return true;
 }
 
-bool sortArray(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &stateArray, 
+bool sortLatticeGreedyMain(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &stateArray, 
     size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd, 
     py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &targetGeometry, 
     std::vector<ParallelMove>& moveList, std::shared_ptr<spdlog::logger> logger)
 {
-    size_t borderRows = RECOMMENDED_DIST_FROM_OCC_SITES / HALF_ROW_SPACING + 1;
-    size_t borderCols = RECOMMENDED_DIST_FROM_OCC_SITES / HALF_COL_SPACING + 1;
+    size_t borderRows = Config::getInstance().recommendedDistFromOccSites / (Config::getInstance().rowSpacing / 2.) + 1;
+    size_t borderCols = Config::getInstance().recommendedDistFromOccSites / (Config::getInstance().columnSpacing / 2.) + 1;
 
     auto pathway = generatePathway(borderRows, borderCols, stateArray);
     auto [labelledPathway, labelCount] = labelPathway(pathway);
@@ -3960,7 +3979,7 @@ bool sortArray(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, 
         return false;
     }
 
-    auto penalizedPathway = generatePathway(borderRows, borderCols, stateArray, MIN_DIST_FROM_OCC_SITES, 0);
+    auto penalizedPathway = generatePathway(borderRows, borderCols, stateArray, Config::getInstance().minDistFromOccSites, 0);
 
     std::stringstream ppathwayStream;
     ppathwayStream << "Penalized pathway: \n";
@@ -4015,7 +4034,7 @@ bool sortArray(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, 
     return true;
 }
 
-std::optional<std::vector<ParallelMove>> sortLatticeGeometriesInternal(
+std::optional<std::vector<ParallelMove>> sortLatticeGreedyInternal(
     py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &stateArray, 
     size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd, 
     py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &targetGeometry)
@@ -4070,7 +4089,7 @@ std::optional<std::vector<ParallelMove>> sortLatticeGeometriesInternal(
     {
         return std::nullopt;
     }
-    if(!sortArray(stateArray, compZoneRowStart, compZoneRowEnd, 
+    if(!sortLatticeGreedyMain(stateArray, compZoneRowStart, compZoneRowEnd, 
         compZoneColStart, compZoneColEnd, targetGeometry, moveList, logger))
     {
         return std::nullopt;
@@ -4105,16 +4124,16 @@ std::optional<std::vector<ParallelMove>> sortLatticeGeometriesInternal(
     return moveList;
 }
 
-std::optional<std::vector<ParallelMove>> sortLatticeGeometriesParallel(
+std::optional<std::vector<ParallelMove>> sortLatticeGreedyParallel(
     py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &stateArray, 
     size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd, 
     py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &targetGeometry)
 {
     std::shared_ptr<spdlog::logger> logger;
     Config& config = Config::getInstance();
-    if((logger = spdlog::get(config.parallelLoggerName)) == nullptr)
+    if((logger = spdlog::get(config.greedyLatticeLoggerName)) == nullptr)
     {
-        logger = spdlog::basic_logger_mt(config.parallelLoggerName, config.logFileName);
+        logger = spdlog::basic_logger_mt(config.greedyLatticeLoggerName, config.logFileName);
     }
     logger->set_level(spdlog::level::debug);
 
@@ -4162,7 +4181,7 @@ std::optional<std::vector<ParallelMove>> sortLatticeGeometriesParallel(
     {
         return std::nullopt;
     }
-    if(!sortArray(stateArray, compZoneRowStart, compZoneRowEnd, 
+    if(!sortLatticeGreedyMain(stateArray, compZoneRowStart, compZoneRowEnd, 
         compZoneColStart, compZoneColEnd, targetGeometry, moveList, logger))
     {
         return std::nullopt;

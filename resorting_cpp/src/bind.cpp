@@ -3,7 +3,7 @@
 #include <pybind11/attr.h>
 #include "sortSequentiallyByRow.hpp"
 #include "sortParallel.hpp"
-#include "sortLatticeGeometries.hpp"
+#include "sortLattice.hpp"
 #include "config.hpp"
 
 namespace py = pybind11;
@@ -45,6 +45,14 @@ PYBIND11_MODULE(resorting_cpp, m) {
     A class for configuring the sorting algorithm. At the moment, this is only used for configuring the logger.
 )pbdoc")
     .def(py::init<>([]{return &Config::getInstance();}))
+    .def("readConfig", &Config::readConfig, "A function that allows for reading in a provided config file", py::arg("filePath"), R"pbdoc(
+    A function that allows for reading in a provided config file
+
+    :param filePath: The path of the provided config file
+    :type filePath: string
+    :return: Whether reading was successful.
+    :rtype: bool
+)pbdoc")
     .def_readwrite("logFileName", &Config::logFileName, R"pbdoc(
     :string: Name of the log file
 )pbdoc")
@@ -53,6 +61,66 @@ PYBIND11_MODULE(resorting_cpp, m) {
 )pbdoc")
     .def_readwrite("parallelLoggerName", &Config::parallelLoggerName, R"pbdoc(
     :string: Name of the parallel logger
+)pbdoc")
+    .def_readwrite("greedyLatticeLoggerName", &Config::greedyLatticeLoggerName, R"pbdoc(
+    :string: Name of the greedy-lattice logger
+)pbdoc")
+    .def_readwrite("latticeByRowLoggerName", &Config::latticeByRowLoggerName, R"pbdoc(
+    :string: Name of the by-row lattice logger
+)pbdoc")
+    .def_readwrite("rowSpacing", &Config::rowSpacing, R"pbdoc(
+    :double: Physical spacing between rows. Only relevant for lattice algorithms
+)pbdoc")
+    .def_readwrite("columnSpacing", &Config::columnSpacing, R"pbdoc(
+    :double: Physical spacing between columns. Only relevant for lattice algorithms
+)pbdoc")
+    .def_readwrite("allowMovingEmptyTrapOntoOccupied", &Config::allowMovingEmptyTrapOntoOccupied, R"pbdoc(
+    :bool: Whether it is allowed to move empty traps onto occupied ones. Only relevant for sortParallel
+)pbdoc")
+    .def_readwrite("allowDiagonalMovement", &Config::allowDiagonalMovement, R"pbdoc(
+    :bool: Whether diagonal movement is allowed. Only relevant for sortParallel
+)pbdoc")
+    .def_readwrite("allowMovesBetweenRows", &Config::allowMovesBetweenRows, R"pbdoc(
+    :bool: Whether moves between rows are always allowed. Only relevant for sortParallel
+)pbdoc")
+    .def_readwrite("allowMovesBetweenCols", &Config::allowMovesBetweenCols, R"pbdoc(
+    :bool: Whether moves between columns are always allowed. Only relevant for sortParallel
+)pbdoc")
+    .def_readwrite("allowMultipleMovesPerAtom", &Config::allowMultipleMovesPerAtom, R"pbdoc(
+    :bool: Whether an atom may be moved multiple times. Only relevant for sortParallel and sortLatticeGreedyParallel
+)pbdoc")
+    .def_readwrite("aodTotalLimit", &Config::aodTotalLimit, R"pbdoc(
+    :unsigned int: How many movable traps may be generated in total. Only relevant for sortParallel, sortLatticeGreedyParallel, and sortLatticeByRowParallel
+)pbdoc")
+    .def_readwrite("aodRowLimit", &Config::aodRowLimit, R"pbdoc(
+    :unsigned int: How many row tones may be fed to the AOD. Only relevant for sortParallel, sortLatticeGreedyParallel, and sortLatticeByRowParallel
+)pbdoc")
+    .def_readwrite("aodColLimit", &Config::aodColLimit, R"pbdoc(
+    :unsigned int: How many column tones may be fed to the AOD. Only relevant for sortParallel, sortLatticeGreedyParallel, and sortLatticeByRowParallel
+)pbdoc")
+    .def_readwrite("moveCostOffset", &Config::moveCostOffset, R"pbdoc(
+    :double: Constant time demand per move. Only relevant for sortParallel and sortLatticeGreedyParallel
+)pbdoc")
+    .def_readwrite("moveCostOffsetSubmove", &Config::moveCostOffsetSubmove, R"pbdoc(
+    :double: Constant time demand per submove. Only relevant for sortParallel and sortLatticeGreedyParallel
+)pbdoc")
+    .def_readwrite("moveCostScalingSqrt", &Config::moveCostScalingSqrt, R"pbdoc(
+    :double: Time demand depending on square root of submove distance. Only relevant for sortParallel and sortLatticeGreedyParallel
+)pbdoc")
+    .def_readwrite("moveCostScalingLinear", &Config::moveCostScalingLinear, R"pbdoc(
+    :double: Time demand depending on submove distance linearly. Only relevant for sortParallel and sortLatticeGreedyParallel
+)pbdoc")
+    .def_readwrite("recommendedDistFromOccSites", &Config::recommendedDistFromOccSites, R"pbdoc(
+    :double: Recommended distance from occupied sites. May be temporarily infringed depending on maxSubmoveDistInPenalizedArea. Only relevant for sortLatticeGreedyParallel
+)pbdoc")
+    .def_readwrite("recommendedDistFromEmptySites", &Config::recommendedDistFromEmptySites, R"pbdoc(
+    :double: Recommended distance from empty sites. May be temporarily infringed depending on maxSubmoveDistInPenalizedArea. Only relevant for sortLatticeGreedyParallel
+)pbdoc")
+    .def_readwrite("minDistFromOccSites", &Config::minDistFromOccSites, R"pbdoc(
+    :double: Minimum distance to keep from occupied sites at any time. Only relevant for sortLatticeGreedyParallel and sortLatticeByRowParallel
+)pbdoc")
+    .def_readwrite("maxSubmoveDistInPenalizedArea", &Config::maxSubmoveDistInPenalizedArea, R"pbdoc(
+    :double: Maximum distance that one may travel in area that is to be avoided, e.g, to minimize heating. Only relevant for sortLatticeGreedyParallel and sortLatticeByRowParallel
 )pbdoc")
     .def("flushLogs", &Config::flushLogs);
 
@@ -92,7 +160,7 @@ PYBIND11_MODULE(resorting_cpp, m) {
     :rtype: list[ParallelMove] | None
 )pbdoc");
 
-m.def("sortLatticeGeometriesParallel", &sortLatticeGeometriesParallel, "A function that sorts an array of atoms in parallel", py::arg("stateArray"), 
+m.def("sortLatticeGreedyParallel", &sortLatticeGreedyParallel, "A function that sorts an array of atoms in parallel", py::arg("stateArray"), 
     py::arg("compZoneRowStart"), py::arg("compZoneRowEnd"), py::arg("compZoneColStart"), py::arg("compZoneColEnd"), py::arg("targetGeometry"), R"pbdoc(
 A function that sorts atoms in a lattice in parallel towards a given geometry
 

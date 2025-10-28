@@ -4,7 +4,7 @@
  */
 
 #include "sortParallel.hpp"
-#include "sortLatticeGeometries.hpp"
+#include "sortLattice.hpp"
 
 #include <algorithm>
 #include <fstream>
@@ -46,8 +46,8 @@ std::optional<int> determineBestStartPosition(ArrayAccessor& stateArray,
     std::optional<double> bestDist = std::nullopt;
 
     // Only consider starting from the middle if movement parallelization even makes sense
-    if(((vertical && AOD_COL_LIMIT > 1 && AOD_ROW_LIMIT < AOD_TOTAL_LIMIT) || 
-        (!vertical && AOD_ROW_LIMIT > 1 && AOD_COL_LIMIT < AOD_TOTAL_LIMIT)) && arraySizeXC > indicesToClear)
+    if(((vertical && Config::getInstance().aodColLimit > 1 && Config::getInstance().aodRowLimit < Config::getInstance().aodTotalLimit) || 
+        (!vertical && Config::getInstance().aodRowLimit > 1 && Config::getInstance().aodColLimit < Config::getInstance().aodTotalLimit)) && arraySizeXC > indicesToClear)
     {
         unsigned int usableBeforeChannel = 0;
         unsigned int usableAfterChannel = std::accumulate(
@@ -155,8 +155,8 @@ void clearSortingChannel(ArrayAccessor& stateArray, int startIndex,
         }
 
         // Check whether it is possible and makes sense to remove all indices simultaneously
-        if(((vertical && AOD_ROW_LIMIT >= count) || (!vertical && AOD_COL_LIMIT >= count)) && 
-            count * maxTones <= AOD_TOTAL_LIMIT && spacingXC >= MIN_DIST_FROM_OCC_SITES)
+        if(((vertical && Config::getInstance().aodRowLimit >= count) || (!vertical && Config::getInstance().aodColLimit >= count)) && 
+            count * maxTones <= Config::getInstance().aodTotalLimit && spacingXC >= Config::getInstance().minDistFromOccSites)
         {
             while(nextIndexToDealWith < (int)arraySizeAC)
             {
@@ -295,28 +295,28 @@ void clearSortingChannel(ArrayAccessor& stateArray, int startIndex,
         unsigned int desiredIndices = 2 * (sortingChannelWidth + 1);
         if(vertical)
         {
-            if(AOD_COL_LIMIT < desiredIndices)
+            if(Config::getInstance().aodColLimit < desiredIndices)
             {
-                desiredIndices = AOD_COL_LIMIT;
+                desiredIndices = Config::getInstance().aodColLimit;
             }
         }
         else
         {
-            if(AOD_ROW_LIMIT < desiredIndices)
+            if(Config::getInstance().aodRowLimit < desiredIndices)
             {
-                desiredIndices = AOD_ROW_LIMIT;
+                desiredIndices = Config::getInstance().aodRowLimit;
             }
         }
-        if(desiredIndices * maxTones > AOD_TOTAL_LIMIT)
+        if(desiredIndices * maxTones > Config::getInstance().aodTotalLimit)
         {
-            desiredIndices = AOD_TOTAL_LIMIT / maxTones;
+            desiredIndices = Config::getInstance().aodTotalLimit / maxTones;
         }
         if(desiredIndices < 1)
         {
             desiredIndices = 1;
         }
 
-        if(desiredIndices >= 2 * (sortingChannelWidth + 1) && spacingXC >= MIN_DIST_FROM_OCC_SITES)
+        if(desiredIndices >= 2 * (sortingChannelWidth + 1) && spacingXC >= Config::getInstance().minDistFromOccSites)
         {
             // Remove all at once if max index count allows for it
             int nextIndexToDealWith = 0;
@@ -406,8 +406,8 @@ void clearSortingChannel(ArrayAccessor& stateArray, int startIndex,
         else
         {
             // Remove atoms index-by-index
-            double channelStart = (double)startIndex - sortingChannelWidth - 2 + (double)MIN_DIST_FROM_OCC_SITES / (double)spacingXC;
-            double channelEnd = (double)startIndex + sortingChannelWidth + 1 - (double)MIN_DIST_FROM_OCC_SITES / (double)spacingXC;
+            double channelStart = (double)startIndex - sortingChannelWidth - 2 + Config::getInstance().minDistFromOccSites / spacingXC;
+            double channelEnd = (double)startIndex + sortingChannelWidth + 1 - Config::getInstance().minDistFromOccSites / spacingXC;
             unsigned int handledIndicesXC = 0;
             while(handledIndicesXC < 2 * (sortingChannelWidth + 1))
             {
@@ -503,7 +503,7 @@ bool createSingleIndexMoves(ArrayAccessor& stateArray, bool vertical, std::vecto
     std::vector<int>& startIndices, int dir, std::optional<std::vector<int>*> endIndices, 
     int endIndexXC, unsigned int targetCount,
     int arraySizeXC, int arraySizeAC, int sortingChannelWidth, int indexXC, int targetGapAC, 
-    unsigned int maxTonesXC, unsigned int maxTonesAC, double spacingXC, 
+    unsigned int maxTonesXC, unsigned int maxTonesAC, double spacingXC, double spacingAC,
     std::vector<std::vector<int>>& usableAtoms, bool parkingMove, std::shared_ptr<spdlog::logger> logger)
 {
     unsigned int count = 0;
@@ -552,22 +552,12 @@ bool createSingleIndexMoves(ArrayAccessor& stateArray, bool vertical, std::vecto
 
         if(targetIndexAC.has_value())
         {
-            double sqDist = (endIndexXC - indexXC) * (endIndexXC - indexXC);
-            double minElbow4ToTargetDist;
-            if(vertical)
-            {
-                sqDist *= COL_SPACING * COL_SPACING;
-                minElbow4ToTargetDist = sqrt(MIN_DIST_FROM_OCC_SITES * MIN_DIST_FROM_OCC_SITES - 
-                    (ROW_SPACING / 2) * (ROW_SPACING / 2)) / COL_SPACING;
-            }
-            else
-            {
-                sqDist *= ROW_SPACING * ROW_SPACING;
-                minElbow4ToTargetDist = sqrt(MIN_DIST_FROM_OCC_SITES * MIN_DIST_FROM_OCC_SITES - 
-                    (COL_SPACING / 2) * (COL_SPACING / 2)) / ROW_SPACING;
-            }
+            double sqDist = (endIndexXC - indexXC) * (endIndexXC - indexXC) * spacingXC * spacingXC;
+            double minElbow4ToTargetDist = sqrt(Config::getInstance().minDistFromOccSites * Config::getInstance().minDistFromOccSites - 
+                (spacingAC / 2) * (spacingAC / 2)) / spacingXC;
+
             bool needToMoveBetweenTrapsAfterSortingChannel = 
-                sqDist > MAX_SUBMOVE_DIST_IN_PENALIZED_AREA * MAX_SUBMOVE_DIST_IN_PENALIZED_AREA && 
+                sqDist > Config::getInstance().maxSubmoveDistInPenalizedArea * Config::getInstance().maxSubmoveDistInPenalizedArea && 
                 sqDist > minElbow4ToTargetDist * minElbow4ToTargetDist;
 
             // If there are target indices, i.e, not a removal move, iterate over start and end indices and add to move accordingly
@@ -577,22 +567,7 @@ bool createSingleIndexMoves(ArrayAccessor& stateArray, bool vertical, std::vecto
                 count++;
                 startSelectionAC->push_back(*indexAC);
                 elbow1SelectionAC->push_back(*indexAC);
-                // Move between traps if distance longer than allowed
-                if(needToMoveBetweenTrapsAfterSortingChannel)
-                {
-                    if(*targetIndexAC.value() > *indexAC)
-                    {
-                        elbow2SelectionAC->push_back(*targetIndexAC.value() - 0.5);
-                    }
-                    else
-                    {
-                        elbow2SelectionAC->push_back(*targetIndexAC.value() + 0.5);
-                    }
-                }
-                else
-                {
-                    elbow2SelectionAC->push_back(*targetIndexAC.value());
-                }
+                elbow2SelectionAC->push_back(*targetIndexAC.value());
                 endSelectionAC->push_back(*targetIndexAC.value());
 
                 indexAC = startIndices.erase(indexAC);
@@ -627,6 +602,21 @@ bool createSingleIndexMoves(ArrayAccessor& stateArray, bool vertical, std::vecto
 
                 if(needToMoveBetweenTrapsAfterSortingChannel)
                 {
+                    // Move between traps if distance longer than allowed
+                    for(auto indexAC = startSelectionAC->begin(), elbow2IndexAC = elbow2SelectionAC->begin(); 
+                        indexAC != startSelectionAC->end() && elbow2IndexAC != elbow2SelectionAC->end(); 
+                        indexAC++, elbow2IndexAC++)
+                    {
+                        if(*elbow2IndexAC > *indexAC)
+                        {
+                            *elbow2IndexAC -= 0.5;
+                        }
+                        else
+                        {
+                            *elbow2IndexAC += 0.5;
+                        }
+                    }
+
                     // With careful consideration of neighboring atoms, one might get away with omitting elbow4
                     ParallelMove::Step elbow3, elbow4;
                     if(vertical)
@@ -715,13 +705,13 @@ bool createCombinedMoves(ArrayAccessor& stateArray, bool vertical, std::vector<P
     std::optional<std::vector<int>*> endIndicesHighIndex, int endIndexXCHighIndex, 
     unsigned int targetCountLowIndex, unsigned int targetCountHighIndex, 
     int arraySizeXC, int arraySizeAC, int sortingChannelWidth, int indexXC[2], int targetGapAC, 
-    unsigned int maxTonesXC, unsigned int maxTonesAC, double spacingXC, 
+    unsigned int maxTonesXC, unsigned int maxTonesAC, double spacingXC, double spacingAC,
     std::vector<std::vector<int>>& usableAtoms, bool parkingMove, std::shared_ptr<spdlog::logger> logger)
 {
     std::set<int> sharedIndices;
 
     if(startIndicesLowIndex.size() > 0 && startIndicesHighIndex.size() > 0 &&
-        maxTonesXC >= 2 && 2 * maxTonesAC <= AOD_TOTAL_LIMIT && 
+        maxTonesXC >= 2 && 2 * maxTonesAC <= Config::getInstance().aodTotalLimit && 
         (targetCountLowIndex > 0 || targetCountHighIndex > 0) && indexXC[0] > 0 && indexXC[1] < arraySizeXC)
     {
         // If spacing is sufficient, use union
@@ -796,7 +786,7 @@ bool createCombinedMoves(ArrayAccessor& stateArray, bool vertical, std::vector<P
                 moveCountAddedSinglesToCombinedMove--;
             }
 
-            if(spacingXC >= MIN_DIST_FROM_OCC_SITES && moveCountAddedSinglesToCombinedMove < moveCountCombined && 
+            if(spacingXC >= Config::getInstance().minDistFromOccSites && moveCountAddedSinglesToCombinedMove < moveCountCombined && 
                 moveCountAddedSinglesToCombinedMove < moveCountSplitUnfilledCombinedMove)
             {
                 if(indicesInUnfilledCombinedMove + indicesInUnfilledLowMove <= maxTonesAC)
@@ -862,34 +852,18 @@ bool createCombinedMoves(ArrayAccessor& stateArray, bool vertical, std::vector<P
 
             double minElbow4ToTargetDist;
             bool needToMoveBetweenTrapsAfterSortingChannel;
-            if(vertical)
-            {
-                minElbow4ToTargetDist = sqrt(MIN_DIST_FROM_OCC_SITES * MIN_DIST_FROM_OCC_SITES - 
-                    (ROW_SPACING / 2) * (ROW_SPACING / 2)) / COL_SPACING;
-                needToMoveBetweenTrapsAfterSortingChannel = 
-                    (((double)indexXC[0] - (double)(sortingChannelWidth + 1) / 2. - (double)endIndexXCLowIndex) * 
-                    (double)COL_SPACING > (double)MAX_SUBMOVE_DIST_IN_PENALIZED_AREA ||
-                    ((double)endIndexXCHighIndex - (double)(sortingChannelWidth + 1) / 2. - (double)indexXC[1]) * 
-                    (double)COL_SPACING > (double)MAX_SUBMOVE_DIST_IN_PENALIZED_AREA) && 
-                    (((double)indexXC[0] - (double)(sortingChannelWidth + 1) / 2. - (double)endIndexXCLowIndex) * 
-                    (double)COL_SPACING > minElbow4ToTargetDist ||
-                    ((double)endIndexXCHighIndex - (double)(sortingChannelWidth + 1) / 2. - (double)indexXC[1]) * 
-                    (double)COL_SPACING > minElbow4ToTargetDist);
-            }
-            else
-            {
-                minElbow4ToTargetDist = sqrt(MIN_DIST_FROM_OCC_SITES * MIN_DIST_FROM_OCC_SITES - 
-                    (COL_SPACING / 2) * (COL_SPACING / 2)) / ROW_SPACING;
-                needToMoveBetweenTrapsAfterSortingChannel = 
-                    (((double)indexXC[0] - (double)(sortingChannelWidth + 1) / 2. - (double)endIndexXCLowIndex) * 
-                    (double)ROW_SPACING > (double)MAX_SUBMOVE_DIST_IN_PENALIZED_AREA ||
-                    ((double)endIndexXCHighIndex - (double)(sortingChannelWidth + 1) / 2. - (double)indexXC[1]) * 
-                    (double)ROW_SPACING > (double)MAX_SUBMOVE_DIST_IN_PENALIZED_AREA) && 
-                    (((double)indexXC[0] - (double)(sortingChannelWidth + 1) / 2. - (double)endIndexXCLowIndex) * 
-                    (double)ROW_SPACING > minElbow4ToTargetDist ||
-                    ((double)endIndexXCHighIndex - (double)(sortingChannelWidth + 1) / 2. - (double)indexXC[1]) * 
-                    (double)ROW_SPACING > minElbow4ToTargetDist);
-            }
+
+            minElbow4ToTargetDist = sqrt(Config::getInstance().minDistFromOccSites * Config::getInstance().minDistFromOccSites - 
+                (spacingAC / 2.) * (spacingAC / 2.)) / spacingXC;
+            needToMoveBetweenTrapsAfterSortingChannel = 
+                (((double)indexXC[0] - (double)(sortingChannelWidth + 1) / 2. - (double)endIndexXCLowIndex) * 
+                (double)spacingXC > (double)Config::getInstance().maxSubmoveDistInPenalizedArea ||
+                ((double)endIndexXCHighIndex - (double)(sortingChannelWidth + 1) / 2. - (double)indexXC[1]) * 
+                (double)spacingXC > (double)Config::getInstance().maxSubmoveDistInPenalizedArea) && 
+                (((double)indexXC[0] - (double)(sortingChannelWidth + 1) / 2. - (double)endIndexXCLowIndex) * 
+                (double)spacingXC > minElbow4ToTargetDist ||
+                ((double)endIndexXCHighIndex - (double)(sortingChannelWidth + 1) / 2. - (double)indexXC[1]) * 
+                (double)spacingXC > minElbow4ToTargetDist);
 
             while(indexAC != sharedIndices.end() && (!targetIndexAC.has_value() || 
                 targetIndexAC.value() != sharedTargetIndices.value().end()))
@@ -932,22 +906,7 @@ bool createCombinedMoves(ArrayAccessor& stateArray, bool vertical, std::vector<P
                     {
                         startSelectionAC->push_back(*indexAC);
                         elbow1SelectionAC->push_back(*indexAC);
-
-                        if(needToMoveBetweenTrapsAfterSortingChannel)
-                        {
-                            if(*targetIndexAC.value() > *indexAC)
-                            {
-                                elbow2SelectionAC->push_back(*targetIndexAC.value() - 0.5);
-                            }
-                            else
-                            {
-                                elbow2SelectionAC->push_back(*targetIndexAC.value() + 0.5);
-                            }
-                        }
-                        else
-                        {
-                            elbow2SelectionAC->push_back(*targetIndexAC.value());
-                        }
+                        elbow2SelectionAC->push_back(*targetIndexAC.value());
                         endSelectionAC->push_back(*targetIndexAC.value());
 
                         bool lowIndexAtom = std::erase(usableAtoms[indexXC[0]], *indexAC) > 0;
@@ -989,6 +948,21 @@ bool createCombinedMoves(ArrayAccessor& stateArray, bool vertical, std::vector<P
 
                         if(needToMoveBetweenTrapsAfterSortingChannel)
                         {
+                            // Move between traps if distance longer than allowed
+                            for(auto indexAC = startSelectionAC->begin(), elbow2IndexAC = elbow2SelectionAC->begin(); 
+                                indexAC != startSelectionAC->end() && elbow2IndexAC != elbow2SelectionAC->end(); 
+                                indexAC++, elbow2IndexAC++)
+                            {
+                                if(*elbow2IndexAC > *indexAC)
+                                {
+                                    *elbow2IndexAC -= 0.5;
+                                }
+                                else
+                                {
+                                    *elbow2IndexAC += 0.5;
+                                }
+                            }
+
                             ParallelMove::Step elbow3, elbow4;
                             if(vertical)
                             {
@@ -1069,7 +1043,7 @@ bool createCombinedMoves(ArrayAccessor& stateArray, bool vertical, std::vector<P
         if(!createSingleIndexMoves(stateArray, vertical, moveList, startIndicesLowIndex, -1, 
             endIndicesLowIndex, endIndexXCLowIndex, 
             targetCountLowIndex, arraySizeXC, arraySizeAC, sortingChannelWidth, 
-            indexXC[0], targetGapAC, maxTonesXC, maxTonesAC, spacingXC,
+            indexXC[0], targetGapAC, maxTonesXC, maxTonesAC, spacingXC, spacingAC, 
             usableAtoms, parkingMove, logger))
         {
             return false;
@@ -1080,7 +1054,7 @@ bool createCombinedMoves(ArrayAccessor& stateArray, bool vertical, std::vector<P
         if(!createSingleIndexMoves(stateArray, vertical, moveList, startIndicesHighIndex, 1, 
             endIndicesHighIndex, endIndexXCHighIndex, 
             targetCountHighIndex, arraySizeXC, arraySizeAC, sortingChannelWidth, 
-            indexXC[1], targetGapAC, maxTonesXC, maxTonesAC, spacingXC,
+            indexXC[1], targetGapAC, maxTonesXC, maxTonesAC, spacingXC, spacingAC,
             usableAtoms, parkingMove, logger))
         {
             return false;
@@ -1092,7 +1066,7 @@ bool createCombinedMoves(ArrayAccessor& stateArray, bool vertical, std::vector<P
 
 bool sortRemainingRowsOrCols(ArrayAccessor& stateArray, int startIndex,
     bool vertical, unsigned int sortingChannelWidth, std::vector<ParallelMove>& moveList, unsigned int arraySizeAC, 
-    unsigned int arraySizeXC, unsigned int maxTonesXC, unsigned int maxTonesAC, double spacingXC, std::vector<std::vector<int>>& usableAtoms, 
+    unsigned int arraySizeXC, unsigned int maxTonesXC, unsigned int maxTonesAC, double spacingXC, double spacingAC, std::vector<std::vector<int>>& usableAtoms, 
     std::vector<std::vector<int>>& unusableAtoms, std::vector<std::vector<int>>& targetSites, 
     size_t compZoneXCStart, size_t compZoneXCEnd, size_t compZoneACStart, size_t compZoneACEnd,
     int targetGapXC, int targetGapAC, std::shared_ptr<spdlog::logger> logger)
@@ -1255,7 +1229,7 @@ bool sortRemainingRowsOrCols(ArrayAccessor& stateArray, int startIndex,
                 unusableAtoms[indexXC[0]], unusableAtoms[indexXC[1]], 
                 std::nullopt, 0, std::nullopt, 0, unusableAtoms[indexXC[0]].size(), 
                 unusableAtoms[indexXC[1]].size(), arraySizeXC, arraySizeAC, sortingChannelWidth, 
-                indexXC, targetGapAC, maxTonesXC, maxTonesAC, spacingXC, usableAtoms, false, logger))
+                indexXC, targetGapAC, maxTonesXC, maxTonesAC, spacingXC, spacingAC, usableAtoms, false, logger))
             {
                 return false;
             }
@@ -1265,7 +1239,7 @@ bool sortRemainingRowsOrCols(ArrayAccessor& stateArray, int startIndex,
             if(!createSingleIndexMoves(stateArray, vertical, moveList, unusableAtoms[indexXC[0]], -1, 
                 std::nullopt, 0, unusableAtoms[indexXC[0]].size(), 
                 arraySizeXC, arraySizeAC, sortingChannelWidth, 
-                indexXC[0], targetGapAC, maxTonesXC, maxTonesAC, spacingXC, usableAtoms, false, logger))
+                indexXC[0], targetGapAC, maxTonesXC, maxTonesAC, spacingXC, spacingAC, usableAtoms, false, logger))
             {
                 return false;
             }
@@ -1275,7 +1249,7 @@ bool sortRemainingRowsOrCols(ArrayAccessor& stateArray, int startIndex,
             if(!createSingleIndexMoves(stateArray, vertical, moveList, unusableAtoms[indexXC[1]], 1, 
                 std::nullopt, 0, unusableAtoms[indexXC[1]].size(), 
                 arraySizeXC, arraySizeAC, sortingChannelWidth, 
-                indexXC[1], targetGapAC, maxTonesXC, maxTonesAC, spacingXC, usableAtoms, false, logger))
+                indexXC[1], targetGapAC, maxTonesXC, maxTonesAC, spacingXC, spacingAC, usableAtoms, false, logger))
             {
                 return false;
             }
@@ -1301,7 +1275,7 @@ bool sortRemainingRowsOrCols(ArrayAccessor& stateArray, int startIndex,
                         &parkingSpotsRemainingAtCurrentIndexXC[0], currentTargetIndexXC[0], 
                         &parkingSpotsRemainingAtCurrentIndexXC[1], currentTargetIndexXC[1],
                         atomsToParkLowIndex, atomsToParkHighIndex, arraySizeXC, arraySizeAC, sortingChannelWidth, 
-                        indexXC, targetGapAC, maxTonesXC, maxTonesAC, spacingXC, usableAtoms, true, logger))
+                        indexXC, targetGapAC, maxTonesXC, maxTonesAC, spacingXC, spacingAC, usableAtoms, true, logger))
                     {
                         return false;
                     }
@@ -1317,7 +1291,7 @@ bool sortRemainingRowsOrCols(ArrayAccessor& stateArray, int startIndex,
                     if(!createSingleIndexMoves(stateArray, vertical, moveList, usableAtoms[indexXC[0]], -1, 
                         &parkingSpotsRemainingAtCurrentIndexXC[0], currentTargetIndexXC[0], 
                         atomsToParkLowIndex, arraySizeXC, arraySizeAC, sortingChannelWidth, 
-                        indexXC[0], targetGapAC, maxTonesXC, maxTonesAC, spacingXC, usableAtoms, true, logger))
+                        indexXC[0], targetGapAC, maxTonesXC, maxTonesAC, spacingXC, spacingAC, usableAtoms, true, logger))
                     {
                         return false;
                     }
@@ -1333,7 +1307,7 @@ bool sortRemainingRowsOrCols(ArrayAccessor& stateArray, int startIndex,
                     if(!createSingleIndexMoves(stateArray, vertical, moveList, usableAtoms[indexXC[1]], 1, 
                         &parkingSpotsRemainingAtCurrentIndexXC[1], currentTargetIndexXC[1], 
                         atomsToParkHighIndex, arraySizeXC, arraySizeAC, sortingChannelWidth, 
-                        indexXC[1], targetGapAC, maxTonesXC, maxTonesAC, spacingXC, usableAtoms, true, logger))
+                        indexXC[1], targetGapAC, maxTonesXC, maxTonesAC, spacingXC, spacingAC, usableAtoms, true, logger))
                     {
                         return false;
                     }
@@ -1410,7 +1384,7 @@ bool sortRemainingRowsOrCols(ArrayAccessor& stateArray, int startIndex,
                         &targetSites[currentTargetIndexXC[1]], currentTargetIndexXC[1],
                         usableAtoms[indexXC[0]].size(), usableAtoms[indexXC[1]].size(), 
                         arraySizeXC, arraySizeAC, sortingChannelWidth, 
-                        indexXC, targetGapAC, maxTonesXC, maxTonesAC, spacingXC, usableAtoms, false, logger))
+                        indexXC, targetGapAC, maxTonesXC, maxTonesAC, spacingXC, spacingAC, usableAtoms, false, logger))
                     {
                         return false;
                     }
@@ -1420,7 +1394,7 @@ bool sortRemainingRowsOrCols(ArrayAccessor& stateArray, int startIndex,
                     if(!createSingleIndexMoves(stateArray, vertical, moveList, usableAtoms[indexXC[0]], -1, 
                         &targetSites[currentTargetIndexXC[0]], currentTargetIndexXC[0], 
                         usableAtoms[indexXC[0]].size(), arraySizeXC, arraySizeAC, sortingChannelWidth, 
-                        indexXC[0], targetGapAC, maxTonesXC, maxTonesAC, spacingXC, usableAtoms, false, logger))
+                        indexXC[0], targetGapAC, maxTonesXC, maxTonesAC, spacingXC, spacingAC, usableAtoms, false, logger))
                     {
                         return false;
                     }
@@ -1430,7 +1404,7 @@ bool sortRemainingRowsOrCols(ArrayAccessor& stateArray, int startIndex,
                     if(!createSingleIndexMoves(stateArray, vertical, moveList, usableAtoms[indexXC[1]], 1, 
                         &targetSites[currentTargetIndexXC[1]], currentTargetIndexXC[1], 
                         usableAtoms[indexXC[1]].size(), arraySizeXC, arraySizeAC, sortingChannelWidth, 
-                        indexXC[1], targetGapAC, maxTonesXC, maxTonesAC, spacingXC, usableAtoms, false, logger))
+                        indexXC[1], targetGapAC, maxTonesXC, maxTonesAC, spacingXC, spacingAC, usableAtoms, false, logger))
                     {
                         return false;
                     }
@@ -1466,7 +1440,7 @@ std::tuple<std::vector<std::vector<int>>,std::vector<std::vector<int>>,std::vect
     ArrayAccessor& targetGeometry)
 {
     // Create mask where true existing atoms would prevent an atoms usability
-    auto usabilityPreventingNeighborhoodMask = generateMask(MIN_DIST_FROM_OCC_SITES);
+    auto usabilityPreventingNeighborhoodMask = generateMask(Config::getInstance().minDistFromOccSites);
     int usabilityPreventingNeighborhoodMaskRowDist = usabilityPreventingNeighborhoodMask.rows() / 2;
     int usabilityPreventingNeighborhoodMaskColDist = usabilityPreventingNeighborhoodMask.cols() / 2;
     usabilityPreventingNeighborhoodMask(usabilityPreventingNeighborhoodMaskRowDist, usabilityPreventingNeighborhoodMaskColDist) = false;
@@ -1652,9 +1626,9 @@ bool sortArray(ArrayAccessor& stateArray,
     ArrayAccessor& targetGeometry, 
     std::vector<ParallelMove>& moveList, std::shared_ptr<spdlog::logger> logger)
 {
-    bool channelVertical = COL_SPACING > ROW_SPACING;
-    unsigned int maxTonesXC = AOD_TOTAL_LIMIT,
-        maxTonesAC = AOD_TOTAL_LIMIT;
+    bool channelVertical = Config::getInstance().columnSpacing > Config::getInstance().rowSpacing;
+    unsigned int maxTonesXC = Config::getInstance().aodTotalLimit,
+        maxTonesAC = Config::getInstance().aodTotalLimit;
 
     // Across channel dir will be abbreviated as XC, along channel as AC
     unsigned int arraySizeXC, arraySizeAC;
@@ -1663,16 +1637,16 @@ bool sortArray(ArrayAccessor& stateArray,
     // Initialize data independent of whether sorting channel is vertical or horizontal
     if(channelVertical)
     {
-        if(AOD_COL_LIMIT < maxTonesXC)
+        if(Config::getInstance().aodColLimit < maxTonesXC)
         {
-            maxTonesXC = AOD_COL_LIMIT;
+            maxTonesXC = Config::getInstance().aodColLimit;
         }
-        if(AOD_ROW_LIMIT < maxTonesAC)
+        if(Config::getInstance().aodRowLimit < maxTonesAC)
         {
-            maxTonesAC = AOD_ROW_LIMIT;
+            maxTonesAC = Config::getInstance().aodRowLimit;
         }
-        spacingXC = COL_SPACING;
-        spacingAC = ROW_SPACING;
+        spacingXC = Config::getInstance().columnSpacing;
+        spacingAC = Config::getInstance().rowSpacing;
         arraySizeXC = stateArray.cols();
         arraySizeAC = stateArray.rows();
         compZoneXCStart = compZoneColStart;
@@ -1682,16 +1656,16 @@ bool sortArray(ArrayAccessor& stateArray,
     }
     else
     {
-        if(AOD_ROW_LIMIT < maxTonesXC)
+        if(Config::getInstance().aodRowLimit < maxTonesXC)
         {
-            maxTonesXC = AOD_ROW_LIMIT;
+            maxTonesXC = Config::getInstance().aodRowLimit;
         }
-        if(AOD_COL_LIMIT < maxTonesAC)
+        if(Config::getInstance().aodColLimit < maxTonesAC)
         {
-            maxTonesAC = AOD_COL_LIMIT;
+            maxTonesAC = Config::getInstance().aodColLimit;
         }
-        spacingXC = ROW_SPACING;
-        spacingAC = COL_SPACING;
+        spacingXC = Config::getInstance().rowSpacing;
+        spacingAC = Config::getInstance().columnSpacing;
         arraySizeXC = stateArray.rows();
         arraySizeAC = stateArray.cols();
         compZoneXCStart = compZoneRowStart;
@@ -1700,9 +1674,9 @@ bool sortArray(ArrayAccessor& stateArray,
         compZoneACEnd = compZoneColEnd;
     }
 
-    int sortingChannelWidth = (int)(ceil((double)MIN_DIST_FROM_OCC_SITES / ((double)spacingXC / 2.)) / 2) * 2;
-    int targetGapXC = ceil((double)MIN_DIST_FROM_OCC_SITES / spacingXC);
-    int targetGapAC = ceil((double)MIN_DIST_FROM_OCC_SITES / spacingAC);
+    int sortingChannelWidth = (int)(ceil(Config::getInstance().minDistFromOccSites / (spacingXC / 2.)) / 2) * 2;
+    int targetGapXC = ceil(Config::getInstance().minDistFromOccSites / spacingXC);
+    int targetGapAC = ceil(Config::getInstance().minDistFromOccSites / spacingAC);
 
     // Differentiate between unusable (too close to each other) and usable atoms and add into per-index buffers
     auto [usableAtomsPerXCIndex, unusableAtomsPerXCIndex, targetSitesPerXCIndex] = 
@@ -1731,7 +1705,7 @@ bool sortArray(ArrayAccessor& stateArray,
 
     // Call main iterating function that sorts atoms row-by-row through sorting channel
     if(!sortRemainingRowsOrCols(stateArray, startingPosition.value(), channelVertical, sortingChannelWidth, moveList, 
-        arraySizeAC, arraySizeXC, maxTonesXC, maxTonesAC, spacingXC, usableAtomsPerXCIndex, unusableAtomsPerXCIndex, 
+        arraySizeAC, arraySizeXC, maxTonesXC, maxTonesAC, spacingXC, spacingAC, usableAtomsPerXCIndex, unusableAtomsPerXCIndex, 
         targetSitesPerXCIndex, compZoneXCStart, compZoneXCEnd, compZoneACStart, compZoneACEnd, 
         targetGapXC, targetGapAC, logger))
     {
@@ -1759,9 +1733,9 @@ std::optional<std::vector<ParallelMove>> sortLatticeByRowParallel(
     // Init logger
     std::shared_ptr<spdlog::logger> logger;
     Config& config = Config::getInstance();
-    if((logger = spdlog::get(config.parallelLoggerName)) == nullptr)
+    if((logger = spdlog::get(config.latticeByRowLoggerName)) == nullptr)
     {
-        logger = spdlog::basic_logger_mt(config.parallelLoggerName, config.logFileName);
+        logger = spdlog::basic_logger_mt(config.latticeByRowLoggerName, config.logFileName);
     }
     logger->set_level(spdlog::level::debug);
 
