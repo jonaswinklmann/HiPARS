@@ -21,7 +21,7 @@ or
 
 ### Usage 
 Look at `scripts` directory for usage examples.
-Many configuration options are, at the moment, hidden in the `.hpp` files. This will be changed in the future.
+Edit the `sortingConfig.cfg` file to adjust parameters to your liking.
 
 The [documentation](https://resorting.readthedocs.io/en/latest/) contains both the functions of the Python package ([hipars package](https://resorting.readthedocs.io/en/latest/hipars.html)) as well the exposed functions of the underlying C++ library ([resorting_cpp package](https://resorting.readthedocs.io/en/latest/resorting_cpp.html)).
 
@@ -31,7 +31,7 @@ For larger tweezer spacings, there are two sorting functions. Accepting the same
 #### sort_sequentially
 This function moves atoms one-by-one towards the computational zone. If enough atoms are present in a plus-shape spanned by the rows and columns of the computational zone, then there are at most as many moves as there are sites in the computational zone. If atoms in the corners have to be used, then some segmented moves may be required.
 #### sort_parallel
-This function parallelizes atom rearrangement through the use of multiple AOD tones. It works in a greedy fashion by executing the best move it can find at any given moment. Execution time does, at the moment, not scale well above around 1000 target sites. This function can only unfold its true potential if both movement between rows and columns is allowed, which can be configured through the `.hpp` files.
+This function parallelizes atom rearrangement through the use of multiple AOD tones. It works in a greedy fashion by executing the best move it can find at any given moment. Execution time does, at the moment, not scale well above around 1000 target sites. This function can only unfold its true potential if both movement between rows and columns is allowed, which can be configured through the config file.
 ### Lattice
 No sequential method exists for lattices as this combination should hardly ever be valuable. If it is required nonetheless, simply reduce the configurable limit to the AOD tones to one.
 #### sort_parallel_lattice (under development)
