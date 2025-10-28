@@ -524,31 +524,52 @@ bool createSingleIndexMoves(ArrayAccessor& stateArray, bool vertical, std::vecto
     {
         // Create move data
         ParallelMove move;
-        ParallelMove::Step start;
-        ParallelMove::Step elbow1;
-        ParallelMove::Step elbow2;
-        std::vector<double> *startSelectionAC, *elbow1SelectionAC, *elbow2SelectionAC;
+        ParallelMove::Step start, elbow1, elbow2, end;
+        std::vector<double> *startSelectionAC, *elbow1SelectionAC, *elbow2SelectionAC, *endSelectionAC;
+        double channelMiddle = (double)indexXC - (double)dir * (double)(sortingChannelWidth + 1) / 2.;
         if(vertical)
         {
             start.colSelection.push_back(indexXC);
-            elbow1.colSelection.push_back((double)indexXC - (double)dir * (double)(sortingChannelWidth + 1) / 2.);
-            elbow2.colSelection.push_back((double)indexXC - (double)dir * (double)(sortingChannelWidth + 1) / 2.);
+            elbow1.colSelection.push_back(channelMiddle);
+            elbow2.colSelection.push_back(channelMiddle);
+            end.colSelection.push_back(endIndexXC);
             startSelectionAC = &start.rowSelection;
             elbow1SelectionAC = &elbow1.rowSelection;
             elbow2SelectionAC = &elbow2.rowSelection;
+            endSelectionAC = &end.rowSelection;
         }
         else
         {
             start.rowSelection.push_back(indexXC);
-            elbow1.rowSelection.push_back((double)indexXC - (double)dir * (double)(sortingChannelWidth + 1) / 2.);
-            elbow2.rowSelection.push_back((double)indexXC - (double)dir * (double)(sortingChannelWidth + 1) / 2.);
+            elbow1.rowSelection.push_back(channelMiddle);
+            elbow2.rowSelection.push_back(channelMiddle);
+            end.rowSelection.push_back(endIndexXC);
             startSelectionAC = &start.colSelection;
             elbow1SelectionAC = &elbow1.colSelection;
             elbow2SelectionAC = &elbow2.colSelection;
+            endSelectionAC = &end.colSelection;
         }
 
         if(targetIndexAC.has_value())
         {
+            double sqDist = (endIndexXC - indexXC) * (endIndexXC - indexXC);
+            double minElbow4ToTargetDist;
+            if(vertical)
+            {
+                sqDist *= COL_SPACING * COL_SPACING;
+                minElbow4ToTargetDist = sqrt(MIN_DIST_FROM_OCC_SITES * MIN_DIST_FROM_OCC_SITES - 
+                    (ROW_SPACING / 2) * (ROW_SPACING / 2)) / COL_SPACING;
+            }
+            else
+            {
+                sqDist *= ROW_SPACING * ROW_SPACING;
+                minElbow4ToTargetDist = sqrt(MIN_DIST_FROM_OCC_SITES * MIN_DIST_FROM_OCC_SITES - 
+                    (COL_SPACING / 2) * (COL_SPACING / 2)) / ROW_SPACING;
+            }
+            bool needToMoveBetweenTrapsAfterSortingChannel = 
+                sqDist > MAX_SUBMOVE_DIST_IN_PENALIZED_AREA * MAX_SUBMOVE_DIST_IN_PENALIZED_AREA && 
+                sqDist > minElbow4ToTargetDist * minElbow4ToTargetDist;
+
             // If there are target indices, i.e, not a removal move, iterate over start and end indices and add to move accordingly
             while(indexAC != startIndices.end() && targetIndexAC.value() != endIndices.value()->end() && 
                 startSelectionAC->size() < maxTonesAC && count < targetCount)
@@ -556,7 +577,23 @@ bool createSingleIndexMoves(ArrayAccessor& stateArray, bool vertical, std::vecto
                 count++;
                 startSelectionAC->push_back(*indexAC);
                 elbow1SelectionAC->push_back(*indexAC);
-                elbow2SelectionAC->push_back(*targetIndexAC.value());
+                // Move between traps if distance longer than allowed
+                if(needToMoveBetweenTrapsAfterSortingChannel)
+                {
+                    if(*targetIndexAC.value() > *indexAC)
+                    {
+                        elbow2SelectionAC->push_back(*targetIndexAC.value() - 0.5);
+                    }
+                    else
+                    {
+                        elbow2SelectionAC->push_back(*targetIndexAC.value() + 0.5);
+                    }
+                }
+                else
+                {
+                    elbow2SelectionAC->push_back(*targetIndexAC.value());
+                }
+                endSelectionAC->push_back(*targetIndexAC.value());
 
                 indexAC = startIndices.erase(indexAC);
                 if(parkingMove)
@@ -582,21 +619,39 @@ bool createSingleIndexMoves(ArrayAccessor& stateArray, bool vertical, std::vecto
                 if(parkingMove)
                 {
                     std::sort(elbow2SelectionAC->begin(), elbow2SelectionAC->end());
+                    std::sort(endSelectionAC->begin(), endSelectionAC->end());
                 }
-                ParallelMove::Step end;
-                if(vertical)
+
+                move.steps.push_back(std::move(start));
+                move.steps.push_back(std::move(elbow1));
+
+                if(needToMoveBetweenTrapsAfterSortingChannel)
                 {
-                    end.colSelection.push_back(endIndexXC);
-                    end.rowSelection = *elbow2SelectionAC;
+                    // With careful consideration of neighboring atoms, one might get away with omitting elbow4
+                    ParallelMove::Step elbow3, elbow4;
+                    if(vertical)
+                    {
+                        elbow3.rowSelection = elbow2.rowSelection;
+                        elbow3.colSelection.push_back((double)endIndexXC + (double)dir * minElbow4ToTargetDist);
+                        elbow4.rowSelection = end.rowSelection;
+                        elbow4.colSelection.push_back((double)endIndexXC + (double)dir * minElbow4ToTargetDist);
+                    }
+                    else
+                    {
+                        elbow3.rowSelection.push_back((double)endIndexXC + (double)dir * minElbow4ToTargetDist);
+                        elbow3.colSelection = elbow2.colSelection;
+                        elbow4.rowSelection.push_back((double)endIndexXC + (double)dir * minElbow4ToTargetDist);
+                        elbow4.colSelection = end.colSelection;
+                    }
+                    move.steps.push_back(std::move(elbow2));
+                    move.steps.push_back(std::move(elbow3));
+                    move.steps.push_back(std::move(elbow4));
                 }
                 else
                 {
-                    end.rowSelection.push_back(endIndexXC);
-                    end.colSelection = *elbow2SelectionAC;
+                    move.steps.push_back(std::move(elbow2));
                 }
-                move.steps.push_back(std::move(start));
-                move.steps.push_back(std::move(elbow1));
-                move.steps.push_back(std::move(elbow2));
+
                 move.steps.push_back(std::move(end));
                 move.execute(stateArray, logger);
                 moveList.push_back(std::move(move));
@@ -667,7 +722,7 @@ bool createCombinedMoves(ArrayAccessor& stateArray, bool vertical, std::vector<P
 
     if(startIndicesLowIndex.size() > 0 && startIndicesHighIndex.size() > 0 &&
         maxTonesXC >= 2 && 2 * maxTonesAC <= AOD_TOTAL_LIMIT && 
-        (targetCountLowIndex > 0 || targetCountHighIndex > 0))
+        (targetCountLowIndex > 0 || targetCountHighIndex > 0) && indexXC[0] > 0 && indexXC[1] < arraySizeXC)
     {
         // If spacing is sufficient, use union
         // Otherwise, shadow traps might interfere so in that case only use intersection
@@ -804,14 +859,44 @@ bool createCombinedMoves(ArrayAccessor& stateArray, bool vertical, std::vector<P
                 targetIndexAC = sharedTargetIndices.value().begin();
             }
             auto indexAC = sharedIndices.begin();
+
+            double minElbow4ToTargetDist;
+            bool needToMoveBetweenTrapsAfterSortingChannel;
+            if(vertical)
+            {
+                minElbow4ToTargetDist = sqrt(MIN_DIST_FROM_OCC_SITES * MIN_DIST_FROM_OCC_SITES - 
+                    (ROW_SPACING / 2) * (ROW_SPACING / 2)) / COL_SPACING;
+                needToMoveBetweenTrapsAfterSortingChannel = 
+                    (((double)indexXC[0] - (double)(sortingChannelWidth + 1) / 2. - (double)endIndexXCLowIndex) * 
+                    (double)COL_SPACING > (double)MAX_SUBMOVE_DIST_IN_PENALIZED_AREA ||
+                    ((double)endIndexXCHighIndex - (double)(sortingChannelWidth + 1) / 2. - (double)indexXC[1]) * 
+                    (double)COL_SPACING > (double)MAX_SUBMOVE_DIST_IN_PENALIZED_AREA) && 
+                    (((double)indexXC[0] - (double)(sortingChannelWidth + 1) / 2. - (double)endIndexXCLowIndex) * 
+                    (double)COL_SPACING > minElbow4ToTargetDist ||
+                    ((double)endIndexXCHighIndex - (double)(sortingChannelWidth + 1) / 2. - (double)indexXC[1]) * 
+                    (double)COL_SPACING > minElbow4ToTargetDist);
+            }
+            else
+            {
+                minElbow4ToTargetDist = sqrt(MIN_DIST_FROM_OCC_SITES * MIN_DIST_FROM_OCC_SITES - 
+                    (COL_SPACING / 2) * (COL_SPACING / 2)) / ROW_SPACING;
+                needToMoveBetweenTrapsAfterSortingChannel = 
+                    (((double)indexXC[0] - (double)(sortingChannelWidth + 1) / 2. - (double)endIndexXCLowIndex) * 
+                    (double)ROW_SPACING > (double)MAX_SUBMOVE_DIST_IN_PENALIZED_AREA ||
+                    ((double)endIndexXCHighIndex - (double)(sortingChannelWidth + 1) / 2. - (double)indexXC[1]) * 
+                    (double)ROW_SPACING > (double)MAX_SUBMOVE_DIST_IN_PENALIZED_AREA) && 
+                    (((double)indexXC[0] - (double)(sortingChannelWidth + 1) / 2. - (double)endIndexXCLowIndex) * 
+                    (double)ROW_SPACING > minElbow4ToTargetDist ||
+                    ((double)endIndexXCHighIndex - (double)(sortingChannelWidth + 1) / 2. - (double)indexXC[1]) * 
+                    (double)ROW_SPACING > minElbow4ToTargetDist);
+            }
+
             while(indexAC != sharedIndices.end() && (!targetIndexAC.has_value() || 
                 targetIndexAC.value() != sharedTargetIndices.value().end()))
             {
                 ParallelMove move;
-                ParallelMove::Step start;
-                ParallelMove::Step elbow1;
-                ParallelMove::Step elbow2;
-                std::vector<double> *startSelectionAC, *elbow1SelectionAC, *elbow2SelectionAC;
+                ParallelMove::Step start, elbow1, elbow2, end;
+                std::vector<double> *startSelectionAC, *elbow1SelectionAC, *elbow2SelectionAC, *endSelectionAC;
                 if(vertical)
                 {
                     start.colSelection.push_back(indexXC[0]);
@@ -819,9 +904,12 @@ bool createCombinedMoves(ArrayAccessor& stateArray, bool vertical, std::vector<P
                     elbow1.colSelection.push_back((double)indexXC[0] + (double)(sortingChannelWidth + 1) / 2.);
                     elbow1.colSelection.push_back((double)indexXC[1] - (double)(sortingChannelWidth + 1) / 2.);
                     elbow2.colSelection = elbow1.colSelection;
+                    end.colSelection.push_back(endIndexXCLowIndex);
+                    end.colSelection.push_back(endIndexXCHighIndex);
                     startSelectionAC = &start.rowSelection;
                     elbow1SelectionAC = &elbow1.rowSelection;
                     elbow2SelectionAC = &elbow2.rowSelection;
+                    endSelectionAC = &end.rowSelection;
                 }
                 else
                 {
@@ -830,9 +918,12 @@ bool createCombinedMoves(ArrayAccessor& stateArray, bool vertical, std::vector<P
                     elbow1.rowSelection.push_back((double)indexXC[0] + (double)(sortingChannelWidth + 1) / 2.);
                     elbow1.rowSelection.push_back((double)indexXC[1] - (double)(sortingChannelWidth + 1) / 2.);
                     elbow2.rowSelection = elbow1.rowSelection;
+                    end.rowSelection.push_back(endIndexXCLowIndex);
+                    end.rowSelection.push_back(endIndexXCHighIndex);
                     startSelectionAC = &start.colSelection;
                     elbow1SelectionAC = &elbow1.colSelection;
                     elbow2SelectionAC = &elbow2.colSelection;
+                    endSelectionAC = &end.colSelection;
                 }
                 if(targetIndexAC.has_value())
                 {
@@ -841,7 +932,24 @@ bool createCombinedMoves(ArrayAccessor& stateArray, bool vertical, std::vector<P
                     {
                         startSelectionAC->push_back(*indexAC);
                         elbow1SelectionAC->push_back(*indexAC);
-                        elbow2SelectionAC->push_back(*targetIndexAC.value());
+
+                        if(needToMoveBetweenTrapsAfterSortingChannel)
+                        {
+                            if(*targetIndexAC.value() > *indexAC)
+                            {
+                                elbow2SelectionAC->push_back(*targetIndexAC.value() - 0.5);
+                            }
+                            else
+                            {
+                                elbow2SelectionAC->push_back(*targetIndexAC.value() + 0.5);
+                            }
+                        }
+                        else
+                        {
+                            elbow2SelectionAC->push_back(*targetIndexAC.value());
+                        }
+                        endSelectionAC->push_back(*targetIndexAC.value());
+
                         bool lowIndexAtom = std::erase(usableAtoms[indexXC[0]], *indexAC) > 0;
                         bool highIndexAtom = std::erase(usableAtoms[indexXC[1]], *indexAC) > 0;
                         std::erase(startIndicesLowIndex, *indexAC);
@@ -873,23 +981,42 @@ bool createCombinedMoves(ArrayAccessor& stateArray, bool vertical, std::vector<P
                         if(parkingMove)
                         {
                             std::sort(elbow2SelectionAC->begin(), elbow2SelectionAC->end());
+                            std::sort(endSelectionAC->begin(), endSelectionAC->end());
                         }
-                        ParallelMove::Step end;
-                        if(vertical)
+
+                        move.steps.push_back(std::move(start));
+                        move.steps.push_back(std::move(elbow1));
+
+                        if(needToMoveBetweenTrapsAfterSortingChannel)
                         {
-                            end.colSelection.push_back(endIndexXCLowIndex);
-                            end.colSelection.push_back(endIndexXCHighIndex);
-                            end.rowSelection = *elbow2SelectionAC;
+                            ParallelMove::Step elbow3, elbow4;
+                            if(vertical)
+                            {
+                                elbow3.rowSelection = elbow2.rowSelection;
+                                elbow3.colSelection.push_back((double)endIndexXCLowIndex + (double)minElbow4ToTargetDist);
+                                elbow3.colSelection.push_back((double)endIndexXCHighIndex - (double)minElbow4ToTargetDist);
+                                elbow4.rowSelection = end.rowSelection;
+                                elbow4.colSelection.push_back((double)endIndexXCLowIndex + (double)minElbow4ToTargetDist);
+                                elbow4.colSelection.push_back((double)endIndexXCHighIndex - (double)minElbow4ToTargetDist);
+                            }
+                            else
+                            {
+                                elbow3.rowSelection.push_back((double)endIndexXCLowIndex + (double)minElbow4ToTargetDist);
+                                elbow3.rowSelection.push_back((double)endIndexXCHighIndex - (double)minElbow4ToTargetDist);
+                                elbow3.colSelection = elbow2.colSelection;
+                                elbow4.rowSelection.push_back((double)endIndexXCLowIndex + (double)minElbow4ToTargetDist);
+                                elbow4.rowSelection.push_back((double)endIndexXCHighIndex - (double)minElbow4ToTargetDist);
+                                elbow4.colSelection = end.colSelection;
+                            }
+                            move.steps.push_back(std::move(elbow2));
+                            move.steps.push_back(std::move(elbow3));
+                            move.steps.push_back(std::move(elbow4));
                         }
                         else
                         {
-                            end.rowSelection.push_back(endIndexXCLowIndex);
-                            end.rowSelection.push_back(endIndexXCHighIndex);
-                            end.colSelection = *elbow2SelectionAC;
+                            move.steps.push_back(std::move(elbow2));
                         }
-                        move.steps.push_back(std::move(start));
-                        move.steps.push_back(std::move(elbow1));
-                        move.steps.push_back(std::move(elbow2));
+
                         move.steps.push_back(std::move(end));
                         move.execute(stateArray, logger);
                         moveList.push_back(std::move(move));
@@ -937,7 +1064,7 @@ bool createCombinedMoves(ArrayAccessor& stateArray, bool vertical, std::vector<P
     }
 
     // For remaining indices, create individual moves
-    if(indexXC[0] >= 0)
+    if(indexXC[0] >= 0 && startIndicesLowIndex.size() > 0 && targetCountLowIndex > 0)
     {
         if(!createSingleIndexMoves(stateArray, vertical, moveList, startIndicesLowIndex, -1, 
             endIndicesLowIndex, endIndexXCLowIndex, 
@@ -948,7 +1075,7 @@ bool createCombinedMoves(ArrayAccessor& stateArray, bool vertical, std::vector<P
             return false;
         }
     }
-    if(indexXC[1] < arraySizeXC)
+    if(indexXC[1] < arraySizeXC && startIndicesHighIndex.size() > 0 && targetCountHighIndex > 0)
     {
         if(!createSingleIndexMoves(stateArray, vertical, moveList, startIndicesHighIndex, 1, 
             endIndicesHighIndex, endIndexXCHighIndex, 
@@ -1034,7 +1161,7 @@ bool sortRemainingRowsOrCols(ArrayAccessor& stateArray, int startIndex,
     {
         logger->debug("indexXC[0]: {}, indexXC[1]: {}", indexXC[0], indexXC[1]);
         std::stringstream unusableAtomsStr;
-        if(indexXC[0] >= 0 && indexXC[0] < unusableAtoms.size())
+        if(indexXC[0] >= 0 && indexXC[0] < (int)unusableAtoms.size())
         {
             unusableAtomsStr << "unusableAtoms[indexXC[0]]: ";
             for(auto unusableAtom : unusableAtoms[indexXC[0]])
@@ -1047,7 +1174,7 @@ bool sortRemainingRowsOrCols(ArrayAccessor& stateArray, int startIndex,
                 unusableAtomsStr << usableAtom << ", ";
             }
         }
-        if(indexXC[1] >= 0 && indexXC[1] < unusableAtoms.size())
+        if(indexXC[1] >= 0 && indexXC[1] < (int)unusableAtoms.size())
         {
             unusableAtomsStr << "\nunusableAtoms[indexXC[1]]: ";
             for(auto unusableAtom : unusableAtoms[indexXC[1]])
