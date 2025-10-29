@@ -6,7 +6,7 @@ This project is aimed at providing a solution for rearranging neutral atoms into
 - Go to `resorting_cpp` directory
 - `make all`
 - Go to `resorting_pip` directory
-- Check that `resorting_cpp.<python_suffix>.so` exists
+- Check that `hipars/resorting_cpp.<python_suffix>.so` exists
 - `pip install ./`
 
 or
@@ -16,7 +16,7 @@ or
 ### Windows
 - Build HiPARS_VS project
 - Go to `resorting_pip` directory
-- Check that `resorting_cpp.<python_suffix>.pyd` exists
+- Check that `hipars/resorting_cpp.<python_suffix>.pyd` exists
 - `pip install ./`
 
 ### Usage 
