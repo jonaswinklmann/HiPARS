@@ -68,6 +68,9 @@ PYBIND11_MODULE(resorting_cpp, m) {
     .def_readwrite("latticeByRowLoggerName", &Config::latticeByRowLoggerName, R"pbdoc(
     :string: Name of the by-row lattice logger
 )pbdoc")
+    .def_readwrite("logLevel", &Config::logLevel, R"pbdoc(
+    :string: String representation of log level ("trace", "debug", "info", "warning"/"warn", "error"/"err", "critical", "off"). Defaults to "off" if not recognised.
+)pbdoc")
     .def_readwrite("rowSpacing", &Config::rowSpacing, R"pbdoc(
     :double: Physical spacing between rows. Only relevant for lattice algorithms
 )pbdoc")
@@ -163,43 +166,43 @@ PYBIND11_MODULE(resorting_cpp, m) {
     :rtype: list[ParallelMove] | None
 )pbdoc");
 
-m.def("sortLatticeGreedyParallel", &sortLatticeGreedyParallel, "A function that sorts an array of atoms in parallel", py::arg("stateArray"), 
-    py::arg("compZoneRowStart"), py::arg("compZoneRowEnd"), py::arg("compZoneColStart"), py::arg("compZoneColEnd"), py::arg("targetGeometry"), R"pbdoc(
-A function that sorts atoms in a lattice in parallel towards a given geometry
+    m.def("sortLatticeGreedyParallel", &sortLatticeGreedyParallel, "A function that sorts an array of atoms in parallel", py::arg("stateArray"), 
+        py::arg("compZoneRowStart"), py::arg("compZoneRowEnd"), py::arg("compZoneColStart"), py::arg("compZoneColEnd"), py::arg("targetGeometry"), R"pbdoc(
+    A function that sorts atoms in a lattice in parallel towards a given geometry
 
-:param stateArray: The array of boolean values to be sorted
-:type stateArray: numpy.ndarray[bool[m, n], flags.writeable]
-:param compZoneRowStart: Start row of computational zone (inclusive)
-:type compZoneRowStart: int
-:param compZoneRowEnd: End row of computational zone (exclusive)
-:type compZoneRowEnd: int
-:param compZoneColStart: Start column of computational zone (inclusive)
-:type compZoneColStart: int
-:param compZoneColEnd: End column of computational zone (exclusive)
-:type compZoneColEnd: int
-:param targetGeometry: Array of boolean values of size (compZoneRowEnd - compZoneRowStart) x (compZoneColEnd - compZoneColStart) specifying target occupancy
-:type targetGeometry: numpy.ndarray[bool[m, n], flags.writeable]
-:return: A list of moves to sort array or None if sorting has failed.
-:rtype: list[ParallelMove] | None
-)pbdoc");
+    :param stateArray: The array of boolean values to be sorted
+    :type stateArray: numpy.ndarray[bool[m, n], flags.writeable]
+    :param compZoneRowStart: Start row of computational zone (inclusive)
+    :type compZoneRowStart: int
+    :param compZoneRowEnd: End row of computational zone (exclusive)
+    :type compZoneRowEnd: int
+    :param compZoneColStart: Start column of computational zone (inclusive)
+    :type compZoneColStart: int
+    :param compZoneColEnd: End column of computational zone (exclusive)
+    :type compZoneColEnd: int
+    :param targetGeometry: Array of boolean values of size (compZoneRowEnd - compZoneRowStart) x (compZoneColEnd - compZoneColStart) specifying target occupancy
+    :type targetGeometry: numpy.ndarray[bool[m, n], flags.writeable]
+    :return: A list of moves to sort array or None if sorting has failed.
+    :rtype: list[ParallelMove] | None
+    )pbdoc");
 
-m.def("sortLatticeByRowParallel", &sortLatticeByRowParallel, "A function that sorts an array of atoms in a lattice row by row in parallel", py::arg("stateArray"), 
-    py::arg("compZoneRowStart"), py::arg("compZoneRowEnd"), py::arg("compZoneColStart"), py::arg("compZoneColEnd"), py::arg("targetGeometry"), R"pbdoc(
-A function that sorts atoms in a lattice in parallel towards a given geometry
+    m.def("sortLatticeByRowParallel", &sortLatticeByRowParallel, "A function that sorts an array of atoms in a lattice row by row in parallel", py::arg("stateArray"), 
+        py::arg("compZoneRowStart"), py::arg("compZoneRowEnd"), py::arg("compZoneColStart"), py::arg("compZoneColEnd"), py::arg("targetGeometry"), R"pbdoc(
+    A function that sorts atoms in a lattice in parallel towards a given geometry
 
-:param stateArray: The array of boolean values to be sorted
-:type stateArray: numpy.ndarray[bool[m, n], flags.writeable]
-:param compZoneRowStart: Start row of computational zone (inclusive)
-:type compZoneRowStart: int
-:param compZoneRowEnd: End row of computational zone (exclusive)
-:type compZoneRowEnd: int
-:param compZoneColStart: Start column of computational zone (inclusive)
-:type compZoneColStart: int
-:param compZoneColEnd: End column of computational zone (exclusive)
-:type compZoneColEnd: int
-:param targetGeometry: Array of boolean values of size (compZoneRowEnd - compZoneRowStart) x (compZoneColEnd - compZoneColStart) specifying target occupancy
-:type targetGeometry: numpy.ndarray[bool[m, n], flags.writeable]
-:return: A list of moves to sort array or None if sorting has failed.
-:rtype: list[ParallelMove] | None
-)pbdoc");
+    :param stateArray: The array of boolean values to be sorted
+    :type stateArray: numpy.ndarray[bool[m, n], flags.writeable]
+    :param compZoneRowStart: Start row of computational zone (inclusive)
+    :type compZoneRowStart: int
+    :param compZoneRowEnd: End row of computational zone (exclusive)
+    :type compZoneRowEnd: int
+    :param compZoneColStart: Start column of computational zone (inclusive)
+    :type compZoneColStart: int
+    :param compZoneColEnd: End column of computational zone (exclusive)
+    :type compZoneColEnd: int
+    :param targetGeometry: Array of boolean values of size (compZoneRowEnd - compZoneRowStart) x (compZoneColEnd - compZoneColStart) specifying target occupancy
+    :type targetGeometry: numpy.ndarray[bool[m, n], flags.writeable]
+    :return: A list of moves to sort array or None if sorting has failed.
+    :rtype: list[ParallelMove] | None
+    )pbdoc");
 };

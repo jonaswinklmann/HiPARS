@@ -12,11 +12,9 @@
 #include <sstream>
 #include <set>
 #include <chrono>
-#include <omp.h>
 #include <ranges>
 
 #include "config.hpp"
-#include "spdlog/sinks/basic_file_sink.h"
 
 // Provides access to array data while possibly flipping indices, useful due to independence on dimension
 bool& accessStateArrayDimIndepedent(ArrayAccessor& stateArray, 
@@ -1731,15 +1729,7 @@ std::optional<std::vector<ParallelMove>> sortLatticeByRowParallel(
     py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &targetGeometry)
 {
     // Init logger
-    std::shared_ptr<spdlog::logger> logger;
-    Config& config = Config::getInstance();
-    if((logger = spdlog::get(config.latticeByRowLoggerName)) == nullptr)
-    {
-        logger = spdlog::basic_logger_mt(config.latticeByRowLoggerName, config.logFileName);
-    }
-    logger->set_level(spdlog::level::debug);
-
-    omp_set_num_threads(NUM_THREADS);
+    std::shared_ptr<spdlog::logger> logger = Config::getInstance().getLatticeByRowLogger();
 
     if(!compZoneRowEnd - compZoneRowStart == (size_t)targetGeometry.rows())
     {

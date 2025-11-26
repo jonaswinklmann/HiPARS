@@ -6,11 +6,9 @@
 #include <sstream>
 #include <set>
 #include <chrono>
-#include <omp.h>
 #include <ranges>
 
 #include "config.hpp"
-#include "spdlog/sinks/basic_file_sink.h"
 
 struct compareOnlyTones
 {
@@ -4129,13 +4127,7 @@ std::optional<std::vector<ParallelMove>> sortLatticeGreedyParallel(
     size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd, 
     py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &targetGeometry)
 {
-    std::shared_ptr<spdlog::logger> logger;
-    Config& config = Config::getInstance();
-    if((logger = spdlog::get(config.greedyLatticeLoggerName)) == nullptr)
-    {
-        logger = spdlog::basic_logger_mt(config.greedyLatticeLoggerName, config.logFileName);
-    }
-    logger->set_level(spdlog::level::debug);
+    std::shared_ptr<spdlog::logger> logger = Config::getInstance().getGreedyLatticeLogger();
 
     if(!compZoneRowEnd - compZoneRowStart == (size_t)targetGeometry.rows())
     {
@@ -4147,8 +4139,6 @@ std::optional<std::vector<ParallelMove>> sortLatticeGreedyParallel(
         logger->error("Comp zone does not have same number of cols as target geometry, aborting");
         return std::nullopt;
     }
-
-    omp_set_num_threads(NUM_THREADS);
 
     std::stringstream strstream;
     strstream << "Initial state: \n";

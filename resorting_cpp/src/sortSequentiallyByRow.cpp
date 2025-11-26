@@ -7,7 +7,6 @@
 #include <optional>
 
 #include "config.hpp"
-#include "spdlog/sinks/basic_file_sink.h"
 
 enum class MovementType
 {
@@ -997,13 +996,7 @@ std::optional<std::vector<SequentialMove>> sortSequentiallyByRow(
     py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>& stateArray, 
     size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd)
 {
-    std::shared_ptr<spdlog::logger> logger;
-    Config& config = Config::getInstance();
-    if((logger = spdlog::get(config.sequentialLoggerName)) == nullptr)
-    {
-        logger = spdlog::basic_logger_mt(config.sequentialLoggerName, config.logFileName);
-    }
-    logger->set_level(spdlog::level::debug);
+    std::shared_ptr<spdlog::logger> logger = Config::getInstance().getSequentialLogger();
 
     std::vector<SequentialMove> moves;
 

@@ -17,6 +17,8 @@
 #define popcount_archspec std::__popcount
 #endif
 
+#define NUM_THREADS 8
+
 double inline costPerSubMove(double dist)
 {
     return dist > DOUBLE_EQUIVALENCE_THRESHOLD ? (Config::getInstance().moveCostOffset + Config::getInstance().moveCostScalingLinear * dist + 
@@ -119,6 +121,19 @@ public:
         }
     }
     bool operator[](size_t index)
+    {
+        if(index < this->count)
+        {
+            return this->bitMask[index / 64] & (UINT64_C(1) << (index % 64));
+        }
+        else
+        {
+            std::stringstream msg;
+            msg << "BitMask index " << index << " out of bounds (size: " << this->count << ") in operator[]";
+            throw std::invalid_argument(msg.str());
+        }
+    }
+    const bool operator[](size_t index) const
     {
         if(index < this->count)
         {
