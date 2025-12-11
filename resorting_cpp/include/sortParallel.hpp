@@ -5,9 +5,10 @@
 
 #include "sort.hpp"
 
-#define MAX_MULTI_ITER_COUNT 2000
+#define MAX_MULTI_ITER_COUNT 1000
 #define CUTOFF_OVERLAP_FRACTION 0.7
 #define MAX_INVESTIGATED_OVERLAP_SELECTIONS 10
+#define BENEFIT_FRACTION_TO_ALSO_EXECUTE 0.95
 
 #define M_4TH_ROOT_2 1.1892071150027210667
 #define M_4TH_ROOT_1_2 1 / M_4TH_ROOT_2
@@ -27,7 +28,7 @@ public:
     ParallelMove() : steps() {};
     static ParallelMove fromStartAndEnd(
         ArrayAccessor& stateArray, ParallelMove::Step start, ParallelMove::Step end, std::shared_ptr<spdlog::logger> logger);
-    double cost();
+    double cost() const;
     bool execute(ArrayAccessor& stateArray, std::shared_ptr<spdlog::logger> logger,
         std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>> alreadyMoved = std::nullopt) const;
 };

@@ -27,13 +27,6 @@ double pythagorasDist(double d1, double d2)
     return sqrt(d1 * d1 + d2 * d2);
 }
 
-bool isInCompZone(int row, int col, size_t compZoneRowStart, 
-    size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd)
-{
-    return row >= (int)compZoneRowStart && row < (int)compZoneRowEnd && 
-        col >= (int)compZoneColStart && col < (int)compZoneColEnd;
-}
-
 double moveCost(const std::vector<std::tuple<bool,size_t,int>>& path)
 {
     double cost = Config::getInstance().moveCostOffset;

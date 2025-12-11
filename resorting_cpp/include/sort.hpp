@@ -21,8 +21,21 @@
 
 double inline costPerSubMove(double dist)
 {
-    return dist > DOUBLE_EQUIVALENCE_THRESHOLD ? (Config::getInstance().moveCostOffset + Config::getInstance().moveCostScalingLinear * dist + 
+    return dist > DOUBLE_EQUIVALENCE_THRESHOLD ? (Config::getInstance().moveCostOffsetSubmove + 
+        Config::getInstance().moveCostScalingLinear * dist + 
         (Config::getInstance().moveCostScalingSqrt != 0 ? Config::getInstance().moveCostScalingSqrt * sqrt(dist) : 0)) : 0;
+}
+
+bool inline isInCompZone(int row, int col, size_t compZoneRowStart, 
+    size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd)
+{
+    return row >= (int)compZoneRowStart && row < (int)compZoneRowEnd && 
+        col >= (int)compZoneColStart && col < (int)compZoneColEnd;
+}
+
+size_t inline roundCoordDown(double coord)
+{
+    return (size_t)(coord + 0.25);
 }
 
 namespace py = pybind11;

@@ -11,6 +11,82 @@
 
 #include "config.hpp"
 
+void moveMoveToSortedMoveListIfUseful(std::vector<std::tuple<ParallelMove,int,double>>& moveList, ParallelMove& move, 
+    int correctedTargetSites, double costPerCorrectedTargetSite)
+{
+    if(moveList.empty() || costPerCorrectedTargetSite <= std::get<2>(moveList[0]) / BENEFIT_FRACTION_TO_ALSO_EXECUTE)
+    {
+        std::tuple<ParallelMove,int,double> insertedMove(std::move(move), correctedTargetSites, costPerCorrectedTargetSite);
+        auto insertPosition = std::upper_bound(moveList.begin(), moveList.end(), insertedMove, 
+            [](const std::tuple<ParallelMove,int,double>& lhs, const std::tuple<ParallelMove,int,double>& rhs)
+            {
+                return std::get<2>(lhs) < std::get<2>(rhs);
+            });
+        moveList.insert(insertPosition, std::move(insertedMove));
+        if(insertPosition == moveList.begin())
+        {
+            double threshold = std::get<2>(moveList[0]) / BENEFIT_FRACTION_TO_ALSO_EXECUTE;
+            for(auto reverseIter = moveList.rbegin(); reverseIter != moveList.rend(); reverseIter++)
+            {
+                if(std::get<2>(*reverseIter) > threshold)
+                {
+                    moveList.erase(std::next(reverseIter).base());
+                }
+            }
+        }
+    }
+}
+
+std::optional<int> calcCorrectedTargetSite(const ParallelMove& move, ArrayAccessor& stateArray, 
+    size_t compZone[4], std::shared_ptr<spdlog::logger> logger,
+    std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>> alreadyMoved, 
+    ArrayAccessor& targetGeometry)
+{
+    int correctedTargetSites = 0;
+    for(size_t rowIndex = 0; rowIndex < move.steps[0].rowSelection.size(); rowIndex++)
+    {
+        size_t startRow = roundCoordDown(move.steps[0].rowSelection[rowIndex]);
+        size_t endRow = roundCoordDown(move.steps.back().rowSelection[rowIndex]);
+        for(size_t colIndex = 0; colIndex < move.steps[0].colSelection.size(); colIndex++)
+        {
+            size_t startCol = roundCoordDown(move.steps[0].colSelection[colIndex]);
+            size_t endCol = roundCoordDown(move.steps.back().colSelection[colIndex]);
+            if(stateArray(startRow, startCol))
+            {
+                if(stateArray(endRow, endCol) || (!Config::getInstance().allowMultipleMovesPerAtom && 
+                    alreadyMoved.has_value() && alreadyMoved.value()(startRow, startCol)))
+                {
+                    return std::nullopt;
+                }
+                else
+                {
+                    if(isInCompZone(startRow, startCol, compZone[0], compZone[1], compZone[2], compZone[3]))
+                    {
+                        if(targetGeometry(startRow - compZone[0], startCol - compZone[2]))
+                        {
+                            correctedTargetSites--;
+                        }
+                        else
+                        {
+                            correctedTargetSites++;
+                        }
+                    }
+                    if(isInCompZone(endRow, endCol, compZone[0], compZone[1], compZone[2], compZone[3]) && 
+                        targetGeometry(endRow - compZone[0], endCol - compZone[2]))
+                    {
+                        correctedTargetSites++;
+                    }
+                }
+            }
+            else if(!Config::getInstance().allowMovingEmptyTrapOntoOccupied && stateArray(endRow, endCol))
+            {
+                return std::nullopt;
+            }
+        }
+    }
+    return correctedTargetSites;
+}
+
 bool matchable(const std::vector<int>& vec1, const std::vector<int>& vec2, int maxDist)
 {
     bool vec1Smaller = vec1.size() < vec2.size();
@@ -46,6 +122,61 @@ bool matchable(const std::vector<int>& vec1, const std::vector<int>& vec2, int m
     }
 
     return smallerVecIterator == smallerVec->end();
+}
+
+std::vector<std::pair<int,int>> getMostPairings(const std::vector<int>& vec1, const std::vector<int>& vec2, int maxDist)
+{
+    bool vec1Smaller = vec1.size() < vec2.size();
+    const std::vector<int> *smallerVec, *largerVec;
+    std::vector<int>::const_iterator smallerVecIterator, largerVecIterator, lastUnusedLargerVecIterator;
+    std::vector<std::pair<int,int>> pairing;
+
+    if(vec1Smaller)
+    {
+        smallerVec = &vec1;
+        smallerVecIterator = vec1.begin();
+        largerVec = &vec2;
+        largerVecIterator = vec2.begin();
+        lastUnusedLargerVecIterator = vec2.begin();
+    }
+    else
+    {
+        smallerVec = &vec2;
+        smallerVecIterator = vec2.begin();
+        largerVec = &vec1;
+        largerVecIterator = vec1.begin();
+        lastUnusedLargerVecIterator = vec1.begin();
+    }
+
+    while(smallerVecIterator != smallerVec->end() && largerVecIterator != largerVec->end()) 
+    {
+        int dist = *largerVecIterator - *smallerVecIterator;
+        if(dist < -maxDist)
+        {
+            largerVecIterator++;
+        }
+        else if(dist <= maxDist)
+        {
+            if(vec1Smaller)
+            {
+                pairing.push_back(std::pair(*smallerVecIterator, *largerVecIterator));
+            }
+            else
+            {
+                pairing.push_back(std::pair(*largerVecIterator, *smallerVecIterator));
+            }
+            smallerVecIterator++;
+            largerVecIterator++;
+            lastUnusedLargerVecIterator = largerVecIterator;
+        }
+        else
+        {
+            smallerVecIterator++;
+            largerVecIterator = lastUnusedLargerVecIterator;
+        }
+    }
+
+    return pairing;
 }
 
 std::optional<std::vector<std::pair<int,int>>> getPairings(const std::vector<int>& vec1, const std::vector<int>& vec2, int maxDist)
@@ -91,14 +222,7 @@ std::optional<std::vector<std::pair<int,int>>> getPairings(const std::vector<int
         }
     }
 
-    if(pairing.size() == smallerVec->size())
-    {
-        return pairing;
-    }
-    else
-    {
-        return std::nullopt;
-    }
+    return pairing;
 }
 
 std::optional<std::vector<std::pair<int,int>>> bottleneckAssignmentMinimizeMaxDist(
@@ -140,11 +264,6 @@ bool orderedDblVecContainsElem(const std::vector<double>& vec, double elem)
     {
         return abs(*firstOccurrence - elem) < DOUBLE_EQUIVALENCE_THRESHOLD;
     }
-}
-
-size_t roundCoordDown(double coord)
-{
-    return (size_t)(coord + 0.25);
 }
 
 bool& accessArrayDim(ArrayAccessor& stateArray,
@@ -397,7 +516,7 @@ ParallelMove ParallelMove::fromStartAndEnd(
     return move;
 }
 
-double ParallelMove::cost()
+double ParallelMove::cost() const
 {
     double cost = Config::getInstance().moveCostOffset;
     const ParallelMove::Step *lastStep = &this->steps[0];
@@ -445,29 +564,32 @@ bool ParallelMove::execute(ArrayAccessor& stateArray, std::shared_ptr<spdlog::lo
     const auto& firstStep = this->steps.front();
     const auto& lastStep = this->steps.back();
 
-    std::stringstream startCols;
-    std::stringstream endCols;
-    std::stringstream startRows;
-    std::stringstream endRows;
+    if(logger->level() <= spdlog::level::info)
+    {
+        std::stringstream startCols;
+        std::stringstream endCols;
+        std::stringstream startRows;
+        std::stringstream endRows;
 
-    for(const auto& col : firstStep.colSelection)
-    {
-        startCols << col << " ";
+        for(const auto& col : firstStep.colSelection)
+        {
+            startCols << col << " ";
+        }
+        for(const auto& col : lastStep.colSelection)
+        {
+            endCols << col << " ";
+        }
+        for(const auto& row : firstStep.rowSelection)
+        {
+            startRows << row << " ";
+        }
+        for(const auto& row : lastStep.rowSelection)
+        {
+            endRows << row << " ";
+        }
+        logger->info("Executing move, rows: ({})->({}), cols: ({})->({})", 
+            startRows.str(), endRows.str(), startCols.str(), endCols.str());
     }
-    for(const auto& col : lastStep.colSelection)
-    {
-        endCols << col << " ";
-    }
-    for(const auto& row : firstStep.rowSelection)
-    {
-        startRows << row << " ";
-    }
-    for(const auto& row : lastStep.rowSelection)
-    {
-        endRows << row << " ";
-    }
-    logger->info("Executing move, rows: ({})->({}), cols: ({})->({})", 
-        startRows.str(), endRows.str(), startCols.str(), endCols.str());
 
     if(firstStep.colSelection.size() != lastStep.colSelection.size() || firstStep.rowSelection.size() != lastStep.rowSelection.size())
     {
@@ -876,10 +998,6 @@ std::tuple<std::optional<ParallelMove>,int,double> improveComplexMove(
                         {
                             size_t startCol = roundCoordDown(start.colSelection[colIndex]);
                             size_t endCol = roundCoordDown(end.colSelection[colIndex]);
-                            bool startsInCompZone = outerRow >= compZone[0] && outerRow < compZone[1] &&
-                                startCol >= compZone[2] && startCol < compZone[3];
-                            bool endsInCompZone = innerRow >= compZone[0] && innerRow < compZone[1] &&
-                                endCol >= compZone[2] && endCol < compZone[3];
                             if(stateArray(outerRow, startCol))
                             {
                                 if(stateArray(innerRow, endCol))
@@ -887,11 +1005,18 @@ std::tuple<std::optional<ParallelMove>,int,double> improveComplexMove(
                                     allowed = false;
                                     break;
                                 }
-                                if(endsInCompZone && targetGeometry(innerRow - compZone[0], endCol - compZone[2]))
+                                if(isInCompZone(innerRow, endCol, compZone[0], compZone[1], compZone[2], compZone[3]))
                                 {
-                                    additionalCorrectedTargetSites++;
+                                    if(targetGeometry(innerRow - compZone[0], endCol - compZone[2]))
+                                    {
+                                        additionalCorrectedTargetSites++;
+                                    }
+                                    else
+                                    {
+                                        additionalCorrectedTargetSites--;
+                                    }
                                 }
-                                if(startsInCompZone)
+                                if(isInCompZone(outerRow, startCol, compZone[0], compZone[1], compZone[2], compZone[3]))
                                 {
                                     if(targetGeometry(outerRow - compZone[0], startCol - compZone[2]))
                                     {
@@ -973,10 +1098,6 @@ std::tuple<std::optional<ParallelMove>,int,double> improveComplexMove(
                         {
                             size_t startRow = roundCoordDown(start.rowSelection[rowIndex]);
                             size_t endRow = roundCoordDown(end.rowSelection[rowIndex]);
-                            bool startsInCompZone = startRow >= compZone[0] && startRow < compZone[1] &&
-                                outerCol >= compZone[2] && outerCol < compZone[3];
-                            bool endsInCompZone = endRow >= compZone[0] && endRow < compZone[1] &&
-                                innerCol >= compZone[2] && innerCol < compZone[3];
                             if(stateArray(startRow, outerCol))
                             {
                                 if(stateArray(endRow, innerCol))
@@ -984,11 +1105,18 @@ std::tuple<std::optional<ParallelMove>,int,double> improveComplexMove(
                                     allowed = false;
                                     break;
                                 }
-                                if(endsInCompZone && targetGeometry(endRow - compZone[0], innerCol - compZone[2]))
+                                if(isInCompZone(endRow, innerCol, compZone[0], compZone[1], compZone[2], compZone[3]))
                                 {
-                                    additionalCorrectedTargetSites++;
+                                    if(targetGeometry(endRow - compZone[0], innerCol - compZone[2]))
+                                    {
+                                        additionalCorrectedTargetSites++;
+                                    }
+                                    else
+                                    {
+                                        additionalCorrectedTargetSites--;
+                                    }
                                 }
-                                if(startsInCompZone)
+                                if(isInCompZone(startRow, outerCol, compZone[0], compZone[1], compZone[2], compZone[3]))
                                 {
                                     if(targetGeometry(startRow - compZone[0], outerCol - compZone[2]))
                                     {
@@ -1479,18 +1607,7 @@ std::tuple<std::optional<ParallelMove>,int,double> moveSeveralRowsAndCols(ArrayA
 
     if(bestMove.has_value())
     {
-        auto [improvedMove, filledVacancies, costPerFilledVacancy] = 
-            improveComplexMove(stateArray, compZone, logger, bestMove.value(), bestMove.value().cost(), bestFillableGaps, alreadyMoved, targetGeometry);
-        if(improvedMove.has_value())
-        {
-            logger->info("Best multi row and column move can fill {} at a cost of {} per gap", filledVacancies, costPerFilledVacancy);
-            return std::tuple(improvedMove, filledVacancies, costPerFilledVacancy);
-        }
-        else
-        {
-            logger->info("Best multi row and column move can fill {} at a cost of {} per gap", bestFillableGaps, bestCostPerFilledGap);
-            return std::tuple(bestMove.value(), bestFillableGaps, bestCostPerFilledGap);
-        }
+        return std::tuple(bestMove.value(), bestFillableGaps, bestCostPerFilledGap);
     }
     else
     {
@@ -1686,166 +1803,215 @@ std::tuple<std::optional<ParallelMove>,int,double> removeUnwantedAtoms(ArrayAcce
     return std::tuple(move, removedUnusedAtoms, move.cost() / removedUnusedAtoms);
 }
 
-std::tuple<std::optional<ParallelMove>,int,double> fillColumnHorizontally(ArrayAccessor& stateArray, 
+std::tuple<std::optional<ParallelMove>,int,double> moveSingleIndex(ArrayAccessor& stateArray, 
     size_t compZone[4], std::shared_ptr<spdlog::logger> logger,
-    std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>>, 
+    std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>> alreadyMoved, 
     ArrayAccessor& targetGeometry)
 {
+    if(!Config::getInstance().allowDiagonalMovement && !Config::getInstance().allowMovesBetweenCols && 
+        !Config::getInstance().allowMovesBetweenRows)
+    {
+        logger->error("Single-index move needs any type of movement between rows or columns");
+        return std::tuple(std::nullopt, 0, DBL_MAX);
+    }
     unsigned int aodTotalLimit = Config::getInstance().aodTotalLimit;
 
+    double baseCost = Config::getInstance().moveCostOffset + 2 * (Config::getInstance().moveCostOffsetSubmove + 
+        Config::getInstance().moveCostScalingSqrt * M_4TH_ROOT_1_2 + 
+        Config::getInstance().moveCostScalingLinear * M_SQRT1_2);
+
     std::optional<ParallelMove> bestMove = std::nullopt;
-    unsigned int bestFillableGaps = 0;
-    double bestCostPerFilledGap = 0;
+    unsigned int bestCorrectedSites = 0;
+    double bestCostPerCorrectedSite = 0;
     for(bool rowFirst : {true, false})
     {
-        if((rowFirst && !Config::getInstance().allowMovesBetweenRows) || (!rowFirst && !Config::getInstance().allowMovesBetweenCols))
-        {
-            continue;
-        }
-        size_t rowDimCompZone[2];
-        size_t colDimCompZone[2];
-        size_t rows;
-        size_t cols;
-        unsigned int rowAODLimit = 0;
-        unsigned int colAODLimit = 0;
-        fillDimensionDependantData(stateArray, compZone, rowFirst, rowDimCompZone, colDimCompZone, rows, cols, rowAODLimit, colAODLimit);
+        size_t outerDimCompZone[2];
+        size_t innerDimCompZone[2];
+        size_t outerSize;
+        size_t innerSize;
+        unsigned int innerAODLimit = 0;
+        unsigned int outerAODLimit = 0;
+        fillDimensionDependantData(stateArray, compZone, rowFirst, outerDimCompZone, innerDimCompZone, outerSize, innerSize, outerAODLimit, innerAODLimit);
 
-        unsigned int aodLimit = rowAODLimit < aodTotalLimit ? rowAODLimit : aodTotalLimit;
-
-        std::vector<std::vector<size_t>> emptyCompZoneLocations;
-        emptyCompZoneLocations.resize(colDimCompZone[1] - colDimCompZone[0]);
-        for(size_t j = colDimCompZone[0]; j < colDimCompZone[1]; j++)
+        std::vector<std::vector<int>> targetIndices;
+        targetIndices.resize(outerDimCompZone[1] - outerDimCompZone[0]);
+        for(size_t i = outerDimCompZone[0]; i < outerDimCompZone[1]; i++)
         {
-            for(size_t i = rowDimCompZone[0]; i < rowDimCompZone[1]; i++)
+            for(size_t j = innerDimCompZone[0]; j < innerDimCompZone[1]; j++)
             {
                 if(!accessArrayDim(stateArray, i, j, rowFirst) && 
-                    accessArrayDim(targetGeometry, i - rowDimCompZone[0], j - colDimCompZone[0], rowFirst))
+                    accessArrayDim(targetGeometry, i - outerDimCompZone[0], j - innerDimCompZone[0], rowFirst))
                 {
-                    emptyCompZoneLocations[j - colDimCompZone[0]].push_back(i);
+                    targetIndices[i - outerDimCompZone[0]].push_back(j);
                 }
             }
         }
 
-        #pragma omp parallel for schedule(dynamic, 1)
-        for(size_t borderColTemp = 0; borderColTemp < cols - (colDimCompZone[1] - colDimCompZone[0]); borderColTemp++)
+        bool disallowLateralMovement = (rowFirst && !Config::getInstance().allowMovesBetweenCols) || 
+            (!rowFirst && !Config::getInstance().allowMovesBetweenRows);
+        bool disallowLengthwiseMovement = (rowFirst && !Config::getInstance().allowMovesBetweenRows) || 
+            (!rowFirst && !Config::getInstance().allowMovesBetweenCols);
+        
+        size_t iStartStart = 0, iStartEnd = outerSize;
+        if(disallowLateralMovement)
         {
-            size_t borderCol = borderColTemp;
-            size_t borderAtomsIndex = borderColTemp;
-            if(borderColTemp >= colDimCompZone[0])
+            iStartStart = outerDimCompZone[0] - 1;
+            if(iStartStart < 0)
             {
-                borderCol += (colDimCompZone[1] - colDimCompZone[0]);
-                borderAtomsIndex -= colDimCompZone[0];
+                iStartStart = 0;
             }
-            std::vector<size_t> atomLocations;
-
-            ParallelMove::Step start;
-            if(rowFirst)
+            iStartEnd = outerDimCompZone[1] + 1;
+            if(iStartEnd > outerSize)
             {
-                start.colSelection.push_back(borderCol);
+                iStartEnd = outerSize;
             }
-            else
-            {
-                start.rowSelection.push_back(borderCol);
-            }
+        }
 
-            for(size_t i = 0; i < rows; i++)
+        // Movement constrictions between rows/columns not yet adhered to
+        #pragma omp parallel for schedule(dynamic, 1)
+        for(size_t iStart = iStartStart; iStart < iStartEnd; iStart++)
+        {
+            std::vector<int> sourceIndices;
+            for(size_t j = 0; j < innerSize; j++)
             {
-                if(accessArrayDim(stateArray, i, borderCol, rowFirst))
+                if(accessArrayDim(stateArray, iStart, j, rowFirst))
                 {
-                    atomLocations.push_back(i);
-                }
-            }
-
-            for(size_t targetCol = colDimCompZone[0]; targetCol < colDimCompZone[1]; targetCol++)
-            {
-                ParallelMove::Step end;
-                if(rowFirst)
-                {
-                    end.colSelection.push_back(targetCol);
-                }
-                else
-                {
-                    end.rowSelection.push_back(targetCol);
-                }
-
-                std::vector<size_t> atomLocationsCopy = atomLocations;
-                const auto& emptySitesInCol = emptyCompZoneLocations[targetCol - colDimCompZone[0]];
-                size_t *sourceSiteMapping = new size_t[emptySitesInCol.size()]();
-                unsigned int filledSites = 0;
-                size_t dist = 1;
-                for(; dist < cols; dist++)
-                {
-                    if(rowFirst)
+                    if((iStart < outerDimCompZone[0] || iStart >= outerDimCompZone[1] || 
+                        j < innerDimCompZone[0] || j >= innerDimCompZone[1] ||
+                        !accessArrayDim(targetGeometry, iStart - outerDimCompZone[0], j - innerDimCompZone[0], rowFirst)) && 
+                        (Config::getInstance().allowMultipleMovesPerAtom || !alreadyMoved.has_value() ||
+                        !alreadyMoved.value()(rowFirst ? iStart : j, rowFirst ? j : iStart)))
                     {
-                        start.rowSelection.clear();
-                        end.rowSelection.clear();
+                        sourceIndices.push_back(j);
+                    }
+                }
+            }
+            if(bestMove.has_value() && baseCost / (double)sourceIndices.size() > bestCostPerCorrectedSite)
+            {
+                continue;
+            }
+            size_t iTargetStart = outerDimCompZone[0], iTargetEnd = outerDimCompZone[1];
+            if(disallowLateralMovement)
+            {
+                iTargetStart = iStart - 1;
+                if(iTargetStart < outerDimCompZone[0])
+                {
+                    iTargetStart = outerDimCompZone[0];
+                }
+                iTargetEnd = iStart + 2;
+                if(iTargetEnd > outerDimCompZone[1])
+                {
+                    iTargetEnd = outerDimCompZone[1];
+                }
+            }
+            for(size_t iTarget = iTargetStart; iTarget < iTargetEnd; iTarget++)
+            {
+                if(bestMove.has_value() && baseCost / (double)targetIndices[iTarget - outerDimCompZone[0]].size() > bestCostPerCorrectedSite)
+                {
+                    continue;
+                }
+                unsigned int outerDist = abs((int)iStart - (int)iTarget);
+                unsigned int maxInnerDist = innerSize / 4;
+                if(disallowLengthwiseMovement)
+                {
+                    maxInnerDist = 2;
+                }
+                for(unsigned int innerDist = 1; innerDist < maxInnerDist; innerDist++)
+                {
+                    auto pairings = getMostPairings(sourceIndices, targetIndices[iTarget - outerDimCompZone[0]], innerDist);
+                    double approxCost = baseCost;
+                    if(Config::getInstance().allowDiagonalMovement)
+                    {
+                        if(outerDist > 1)
+                        {
+                            approxCost += costPerSubMove(outerDist - 1);
+                        }
+                        if(innerDist > 1)
+                        {
+                            approxCost += costPerSubMove(innerDist - 1);
+                        }
                     }
                     else
                     {
-                        start.colSelection.clear();
-                        end.colSelection.clear();
-                    }
-                    size_t atomLocationIndex = 0;
-                    filledSites = 0;
-                    for(const auto& emptySite : emptySitesInCol)
-                    {
-                        while(atomLocationIndex < atomLocations.size() && (int)atomLocations[atomLocationIndex] < (int)emptySite - (int)dist)
+                        if(outerDist > 0)
                         {
-                            atomLocationIndex++;
+                            approxCost += costPerSubMove(outerDist);
                         }
-                        if(atomLocationIndex >= atomLocations.size() || filledSites == aodLimit)
+                        if(innerDist > 0)
                         {
-                            break;
-                        }
-                        else if((int)atomLocations[atomLocationIndex] >= (int)emptySite - (int)dist && 
-                            atomLocations[atomLocationIndex] <= emptySite + dist)
-                        {
-                            if(rowFirst)
-                            {
-                                start.rowSelection.push_back(atomLocations[atomLocationIndex]);
-                                end.rowSelection.push_back(emptySite);
-                            }
-                            else
-                            {
-                                start.colSelection.push_back(atomLocations[atomLocationIndex]);
-                                end.colSelection.push_back(emptySite);
-                            }
-                            filledSites++;
-                            atomLocationIndex++;
+                            approxCost += costPerSubMove(innerDist);
                         }
                     }
-                    // 2 * half diagonal step cost
-                    double approxCost = Config::getInstance().moveCostOffset + costPerSubMove(dist - 1) + 
-                        costPerSubMove(abs((int)borderCol - (int)targetCol) - 1) + 2 * (Config::getInstance().moveCostOffsetSubmove + 
-                        Config::getInstance().moveCostScalingSqrt * M_4TH_ROOT_1_2 + Config::getInstance().moveCostScalingLinear * M_SQRT1_2);
-                    if(!bestMove.has_value() || approxCost / filledSites < bestCostPerFilledGap)
+
+                    while(pairings.size() > innerAODLimit || pairings.size() > aodTotalLimit)
                     {
+                        pairings.erase(std::next(pairings.rbegin()).base());
+                    }
+
+                    int correctedTargetSites = pairings.size();
+                    // If it started in the comp zone, it must have been a non-target occupied site
+                    if(iStart >= outerDimCompZone[0] && iStart < outerDimCompZone[1])
+                    {
+                        for(auto& [startIndex, endIndex] : pairings)
+                        {
+                            if(startIndex >= (int)innerDimCompZone[0] && startIndex < (int)innerDimCompZone[1])
+                            {
+                                correctedTargetSites++;
+                            }
+                        }
+                    }
+
+                    if(!bestMove.has_value() || approxCost / (double)correctedTargetSites < bestCostPerCorrectedSite)
+                    {
+                        ParallelMove::Step start, end;
+                        std::vector<double> *startVector, *endVector;
+                        if(rowFirst)
+                        {
+                            startVector = &start.colSelection;
+                            endVector = &end.colSelection;
+                            start.rowSelection.push_back(iStart);
+                            end.rowSelection.push_back(iTarget);
+                        }
+                        else
+                        {
+                            startVector = &start.rowSelection;
+                            endVector = &end.rowSelection;
+                            start.colSelection.push_back(iStart);
+                            end.colSelection.push_back(iTarget);
+                        }
+
+                        for(auto& [startIndex, endIndex] : pairings)
+                        {
+                            startVector->push_back(startIndex);
+                            endVector->push_back(endIndex);
+                        }
+
                         ParallelMove move = ParallelMove::fromStartAndEnd(stateArray, start, end, logger);
-                        double costPerGap = move.cost() / filledSites;
-                        if(!bestMove.has_value() || costPerGap < bestCostPerFilledGap)
+                        auto costPerCorrectedTargetSite = move.cost() / correctedTargetSites;
+                        if(!bestMove.has_value() || costPerCorrectedTargetSite < bestCostPerCorrectedSite)
                         {
                             #pragma omp critical
                             {
-                                if(!bestMove.has_value() || costPerGap < bestCostPerFilledGap)
-                                {
-                                    bestMove = move;
-                                    bestCostPerFilledGap = costPerGap;
-                                    bestFillableGaps = filledSites;
-                                }
+                                bestMove = move;
+                                bestCorrectedSites = correctedTargetSites;
+                                bestCostPerCorrectedSite = costPerCorrectedTargetSite;
                             }
                         }
                     }
-                    if(filledSites == emptySitesInCol.size() || filledSites == atomLocations.size() || filledSites >= aodLimit)
+                
+                    if(pairings.size() == sourceIndices.size() || 
+                        pairings.size() == targetIndices[iTarget - outerDimCompZone[0]].size() || 
+                        pairings.size() >= innerAODLimit || pairings.size() >= aodTotalLimit)
                     {
                         break;
                     }
                 }
-                delete[] sourceSiteMapping;
             }
         }
     }
-    logger->info("Best horizontal column move can fill {} at a cost of {} per gap", bestFillableGaps, bestCostPerFilledGap);
-    return std::tuple(bestMove, bestFillableGaps, bestCostPerFilledGap);
+
+    logger->info("Best single index move can fill {} at a cost of {} per gap", bestCorrectedSites, bestCostPerCorrectedSite);
+    return std::tuple(bestMove, bestCorrectedSites, bestCostPerCorrectedSite);
 }
 
 std::tuple<std::optional<ParallelMove>,int,double> fillRowThroughSubspace(ArrayAccessor& stateArray, 
@@ -2441,100 +2607,131 @@ bool analyzeArray(ArrayAccessor& stateArray, size_t compZone[4], int& incorrectT
     return true;
 }
 
-bool findNextMove(ArrayAccessor& stateArray, size_t compZone[4], std::vector<ParallelMove>& moves, bool& sorted, int& incorrectTargetSites, 
-    ArrayAccessor& targetGeometry, std::shared_ptr<spdlog::logger> logger,
-    std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>> alreadyMoved)
+bool findNextMove(ArrayAccessor& stateArray, size_t compZone[4], std::vector<ParallelMove>& moves, 
+    bool& sorted, int& incorrectTargetSites, ArrayAccessor& targetGeometry, std::shared_ptr<spdlog::logger> logger,
+    std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>> alreadyMoved,
+    std::vector<std::chrono::nanoseconds>& timePerMoveFunction)
 {
     logger->debug("Finding next best move");
-    std::optional<ParallelMove> bestMove = std::nullopt;
-    double bestCostPerCorrectedTargetSite = 0;
-    int bestCorrectedTargetSites = 0;
+    std::vector<std::tuple<ParallelMove,int,double>> bestMoves;
     auto startTime = std::chrono::steady_clock::now();
 
-    for(const auto& function : {fillRowSidesDirectly, fillRowThroughSubspace, 
-        fillColumnHorizontally, moveSeveralRowsAndCols, removeUnwantedAtoms})
+    for(size_t i = 0; const auto& function : {fillRowSidesDirectly, fillRowThroughSubspace,
+        moveSeveralRowsAndCols, removeUnwantedAtoms, moveSingleIndex})
     {
         auto [move, correctedTargetSites, costPerCorrectedTargetSite] = 
             function(stateArray, compZone, logger, alreadyMoved, targetGeometry);
         if(move.has_value() && correctedTargetSites > 0)
         {
-            if(!bestMove.has_value() || costPerCorrectedTargetSite < bestCostPerCorrectedTargetSite)
+            for(const auto& improvingFunction : {improveComplexMove, improveMoveByAddingIndependentAtom})
             {
-                bestCostPerCorrectedTargetSite = costPerCorrectedTargetSite;
-                bestCorrectedTargetSites = correctedTargetSites;
-                bestMove = move.value();
+                auto [improvedMove, improvedCorrectedTargetSites, improvedCostPerCorrectedTargetSite] = improvingFunction(stateArray, 
+                    compZone, logger, move.value(), move.value().cost(), correctedTargetSites, alreadyMoved, targetGeometry);
+                if(improvedMove.has_value() && improvedCostPerCorrectedTargetSite < costPerCorrectedTargetSite)
+                {
+                    move = improvedMove.value();
+                    correctedTargetSites = improvedCorrectedTargetSites;
+                    costPerCorrectedTargetSite = improvedCostPerCorrectedTargetSite;
+                }
             }
+            moveMoveToSortedMoveListIfUseful(bestMoves, move.value(), correctedTargetSites, costPerCorrectedTargetSite);
         }
         auto duration = std::chrono::steady_clock::now() - startTime;
-        logger->warn("Time for move creation: {}ns", duration.count());
         startTime = std::chrono::steady_clock::now();
+        if(timePerMoveFunction.size() <= i)
+        {
+            timePerMoveFunction.push_back(std::chrono::nanoseconds::zero());
+        }
+        timePerMoveFunction[i++] += duration;
     }
 
-    if(!bestMove.has_value())
+    if(bestMoves.empty())
     {
         logger->error("Couldn't find another move");
         return false;
     }
     else
     {
-        for(const auto& improvingFunction : {improveComplexMove, improveMoveByAddingIndependentAtom})
-        {
-            auto [improvedMove, improvedCorrectedTargetSites, improvedCostPerCorrectedTargetSite] = improvingFunction(stateArray, 
-                compZone, logger, bestMove.value(), bestMove.value().cost(), bestCorrectedTargetSites, alreadyMoved, targetGeometry);
-            if(improvedMove.has_value() && improvedCostPerCorrectedTargetSite < bestCostPerCorrectedTargetSite)
-            {
-                bestMove = improvedMove;
-                bestCorrectedTargetSites = improvedCorrectedTargetSites;
-                bestCostPerCorrectedTargetSite = improvedCostPerCorrectedTargetSite;
-            }
-            auto duration = std::chrono::steady_clock::now() - startTime;
-            logger->warn("Time for move improvement: {}ns", duration.count());
-            startTime = std::chrono::steady_clock::now();
-        }
-
-        if(!bestMove.value().execute(stateArray, logger, alreadyMoved))
+        auto& [move, bestCorrectedTargetSites, bestCostPerCorrectedTargetSite] = bestMoves[0];
+        if(!move.execute(stateArray, logger, alreadyMoved))
         {
             logger->error("Error when executing move");
             return false;
         }
-        else
-        {
-            incorrectTargetSites -= bestCorrectedTargetSites;
-            moves.push_back(std::move(bestMove.value()));
-        }
+        incorrectTargetSites -= bestCorrectedTargetSites;
+        moves.push_back(move);
 
-        std::stringstream strstream;
-        strstream << "State after move execution: \n";
-        for(size_t r = 0; r < (size_t)stateArray.rows(); r++)
+        for(size_t i = 1; i < bestMoves.size(); i++)
         {
-            for(size_t c = 0; c < (size_t)stateArray.cols(); c++)
+            auto [nextBestMove, nextBestCorrectedTargetSites, nextBestCostPerCorrectedTargetSite] = bestMoves[i];
+            std::optional<int> updatedCorrectedTargetSite = calcCorrectedTargetSite(nextBestMove, stateArray,
+                compZone, logger, alreadyMoved, targetGeometry);
+            if(!updatedCorrectedTargetSite.has_value() || updatedCorrectedTargetSite.value() <= 0)
             {
-                if(r >= compZone[0] && r < compZone[1] && c >= compZone[2] && c < compZone[3])
+                continue;
+            }
+            else
+            {
+                nextBestCorrectedTargetSites = updatedCorrectedTargetSite.value();
+                logger->info("Investigated next-best move has cost per corrected site {}, threshold: {}", 
+                    nextBestCostPerCorrectedTargetSite, bestCostPerCorrectedTargetSite / BENEFIT_FRACTION_TO_ALSO_EXECUTE);
+                if(nextBestCostPerCorrectedTargetSite < bestCostPerCorrectedTargetSite / BENEFIT_FRACTION_TO_ALSO_EXECUTE)
                 {
-                    if(targetGeometry(r - compZone[0], c - compZone[2]))
+                    if(!nextBestMove.execute(stateArray, logger, alreadyMoved))
                     {
-                        strstream << (stateArray(r,c) != 0 ? "█" : "▒");
+                        logger->error("Error when executing move");
+                        return false;
                     }
                     else
                     {
-                        strstream << (stateArray(r,c) != 0 ? "X" : " ");
+                        // Save move but don't save to list of last costs as to not deteriorate performance too much
+                        incorrectTargetSites -= nextBestCorrectedTargetSites;
+                        moves.push_back(nextBestMove);
                     }
                 }
                 else
                 {
-                    strstream << (stateArray(r,c) != 0 ? "█" : " ");
+                    break;
                 }
             }
-            strstream << "\n";
         }
-        logger->info(strstream.str());
-    }
-    logger->debug("{} incorrect target sites", incorrectTargetSites);
-    analyzeArray(stateArray, compZone, incorrectTargetSites, targetGeometry, logger);
-    logger->debug("analysis counts {} incorrect target sites", incorrectTargetSites);
 
-    auto duration = std::chrono::steady_clock::now() - startTime;
-    logger->warn("Time until end of function: {}ns", duration.count());
+        if(logger->level() <= spdlog::level::info)
+        {
+            std::stringstream strstream;
+            strstream << "State after move execution: \n";
+            for(size_t r = 0; r < (size_t)stateArray.rows(); r++)
+            {
+                for(size_t c = 0; c < (size_t)stateArray.cols(); c++)
+                {
+                    if(r >= compZone[0] && r < compZone[1] && c >= compZone[2] && c < compZone[3])
+                    {
+                        if(targetGeometry(r - compZone[0], c - compZone[2]))
+                        {
+                            strstream << (stateArray(r,c) != 0 ? "█" : "▒");
+                        }
+                        else
+                        {
+                            strstream << (stateArray(r,c) != 0 ? "X" : " ");
+                        }
+                    }
+                    else
+                    {
+                        strstream << (stateArray(r,c) != 0 ? "█" : " ");
+                    }
+                }
+                strstream << "\n";
+            }
+            logger->info(strstream.str());
+        }
+        logger->debug("{} incorrect target sites", incorrectTargetSites);
+    }
+    int incorrectTargetSitesAA;
+    analyzeArray(stateArray, compZone, incorrectTargetSitesAA, targetGeometry, logger);
+    if(incorrectTargetSites != incorrectTargetSitesAA)
+    {
+        return false;
+    }
 
     if(incorrectTargetSites == 0)
     {
@@ -2572,22 +2769,31 @@ std::optional<std::vector<ParallelMove>> sortParallelInternal(
     analyzeArray(stateArray, compZone, incorrectTargetSites, targetGeometry, logger);
     bool sorted = false;
 
+    std::vector<std::chrono::nanoseconds> timePerMoveFunction;
+
     while(!sorted)
     {
         if(alreadyMoved.has_value())
         {
-            if(!findNextMove(stateArray, compZone, moves, sorted, incorrectTargetSites, targetGeometry, logger, alreadyMoved.value()))
+            if(!findNextMove(stateArray, compZone, moves, sorted, incorrectTargetSites, 
+                targetGeometry, logger, alreadyMoved.value(), timePerMoveFunction))
             {
                 break;
             }
         }
         else
         {
-            if(!findNextMove(stateArray, compZone, moves, sorted, incorrectTargetSites, targetGeometry, logger, std::nullopt))
+            if(!findNextMove(stateArray, compZone, moves, sorted, incorrectTargetSites, 
+                targetGeometry, logger, std::nullopt, timePerMoveFunction))
             {
                 break;
             }
         }
+    }
+
+    for(int i = 0; auto duration : timePerMoveFunction)
+    {
+        logger->debug("Total time taken by move function {}: {}ns", i++, duration.count());
     }
 
     if(!sorted)
