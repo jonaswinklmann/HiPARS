@@ -4038,12 +4038,12 @@ std::optional<std::vector<ParallelMove>> sortLatticeGreedyInternal(
     }
     logger->set_level(spdlog::level::debug);
 
-    if(!compZoneRowEnd - compZoneRowStart == (size_t)targetGeometry.rows())
+    if(!(compZoneRowEnd - compZoneRowStart == (size_t)targetGeometry.rows()))
     {
         logger->error("Comp zone does not have same number of rows as target geometry, aborting");
         return std::nullopt;
     }
-    if(!compZoneColEnd - compZoneColStart == (size_t)targetGeometry.cols())
+    if(!(compZoneColEnd - compZoneColStart == (size_t)targetGeometry.cols()))
     {
         logger->error("Comp zone does not have same number of cols as target geometry, aborting");
         return std::nullopt;

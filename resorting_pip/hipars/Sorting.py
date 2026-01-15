@@ -11,9 +11,9 @@ class Sorting:
     """
 
     def __init__(self):
-        self.config = resorting_cpp.Config()
         """Constructor method
         """
+        self.config = resorting_cpp.Config()
     
     def read_config_file(self, file_path):
         """Function to pass a config file for the underlying sorting library

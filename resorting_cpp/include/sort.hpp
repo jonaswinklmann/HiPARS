@@ -189,7 +189,7 @@ public:
 
         return *this;
     };
-    unsigned int bitsSet()
+    unsigned int bitsSet() const
     {
         unsigned int popCount = 0;
         for(size_t i = 0; i <= this->count / 64; i++)

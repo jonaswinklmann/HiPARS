@@ -11,29 +11,48 @@
 
 #include "config.hpp"
 
-void moveMoveToSortedMoveListIfUseful(std::vector<std::tuple<ParallelMove,int,double>>& moveList, ParallelMove& move, 
-    int correctedTargetSites, double costPerCorrectedTargetSite)
+void moveMoveToSortedMoveListIfUseful(std::vector<std::tuple<ParallelMove,int,double>>& moveList, std::vector<size_t>& moveRanking, 
+    ParallelMove& move, int correctedTargetSites, double costPerCorrectedTargetSite)
 {
-    if(moveList.empty() || costPerCorrectedTargetSite <= std::get<2>(moveList[0]) / BENEFIT_FRACTION_TO_ALSO_EXECUTE)
+    if(!moveList.empty() && !moveRanking.empty())
     {
-        std::tuple<ParallelMove,int,double> insertedMove(std::move(move), correctedTargetSites, costPerCorrectedTargetSite);
-        auto insertPosition = std::upper_bound(moveList.begin(), moveList.end(), insertedMove, 
-            [](const std::tuple<ParallelMove,int,double>& lhs, const std::tuple<ParallelMove,int,double>& rhs)
-            {
-                return std::get<2>(lhs) < std::get<2>(rhs);
-            });
-        moveList.insert(insertPosition, std::move(insertedMove));
-        if(insertPosition == moveList.begin())
+        if(costPerCorrectedTargetSite <= std::get<2>(moveList[moveRanking[0]]) / BENEFIT_FRACTION_TO_ALSO_EXECUTE)
         {
-            double threshold = std::get<2>(moveList[0]) / BENEFIT_FRACTION_TO_ALSO_EXECUTE;
-            for(auto reverseIter = moveList.rbegin(); reverseIter != moveList.rend(); reverseIter++)
+            size_t insertPosition = moveRanking.size();
+            for(size_t nthBestMove = 0; nthBestMove < moveRanking.size(); nthBestMove++)
             {
-                if(std::get<2>(*reverseIter) > threshold)
+                if(costPerCorrectedTargetSite <= std::get<2>(moveList[moveRanking[nthBestMove]]))
                 {
-                    moveList.erase(std::next(reverseIter).base());
+                    insertPosition = nthBestMove;
+                    break;
                 }
             }
+            double bestCostPerCorrectedTargetSite = insertPosition == 0 ? costPerCorrectedTargetSite : 
+                std::get<2>(moveList[moveRanking[0]]);
+            if(insertPosition < moveRanking.size() && std::get<2>(moveList[moveRanking.back()]) > 
+                bestCostPerCorrectedTargetSite / BENEFIT_FRACTION_TO_ALSO_EXECUTE)
+            {
+                // Previously worst is removed as it is not good enough
+                moveList[moveRanking.back()] = std::tuple(std::move(move), correctedTargetSites, costPerCorrectedTargetSite);
+            }
+            else
+            {
+                // Keep all other moves
+                moveList.push_back(std::tuple(std::move(move), correctedTargetSites, costPerCorrectedTargetSite));
+                moveRanking.push_back(moveList.size() - 1);
+            }
+            size_t insertIndex = moveRanking.back();
+            for(size_t nthBestMove = moveRanking.size() - 1; nthBestMove > insertPosition; nthBestMove--)
+            {
+                moveRanking[nthBestMove] = moveRanking[nthBestMove - 1];
+            }
+            moveRanking[insertPosition] = insertIndex;
         }
+    }
+    else
+    {
+        moveList.push_back(std::tuple(std::move(move), correctedTargetSites, costPerCorrectedTargetSite));
+        moveRanking.push_back(0);
     }
 }
 
@@ -234,7 +253,6 @@ std::optional<std::vector<std::pair<int,int>>> bottleneckAssignmentMinimizeMaxDi
     {
         maxDist = abs(vec2.back() - vec1.front());
     }
-    std::optional<std::vector<std::pair<int,int>>> bestPairing = std::nullopt;
 
     // Binary search over distance
     while(minDist < maxDist) 
@@ -251,6 +269,33 @@ std::optional<std::vector<std::pair<int,int>>> bottleneckAssignmentMinimizeMaxDi
     }
 
     return getPairings(vec1, vec2, minDist);
+}
+
+int bottleneckAssignmentMinimizeMaxDistGetDist(
+    const std::vector<int>& vec1, const std::vector<int>& vec2)
+{
+    int minDist = 0;
+    int maxDist = abs(vec1.back() - vec2.front());
+    if(abs(vec2.back() - vec1.front()) > maxDist)
+    {
+        maxDist = abs(vec2.back() - vec1.front());
+    }
+
+    // Binary search over distance
+    while(minDist < maxDist) 
+    {
+        int avgDist = (minDist + maxDist) / 2;
+        if(matchable(vec1, vec2, avgDist))
+        {
+            maxDist = avgDist;
+        } 
+        else 
+        {
+            minDist = avgDist + 1;
+        }
+    }
+
+    return minDist;
 }
 
 bool orderedDblVecContainsElem(const std::vector<double>& vec, double elem)
@@ -1202,125 +1247,6 @@ std::tuple<std::optional<ParallelMove>,int,double> improveComplexMove(
     return std::tuple(std::move(improvedMove), correctedTargetSites, bestCostPerCorrectedTargetSite);
 }
 
-std::pair<double, std::optional<ParallelMove>> checkComplexMoveCost(ArrayAccessor& stateArray, 
-    size_t compZone[4], std::shared_ptr<spdlog::logger> logger, const RowBitMask& sourceBitMask, const RowBitMask& targetBitMask, 
-    bool rowFirst, size_t colDimCompZone[2], size_t cols, unsigned int maxColCount, std::optional<double> bestCostPerFilledGap)
-{
-    if(sourceBitMask.indices.size() != targetBitMask.indices.size())
-    {
-        return std::pair(0,std::nullopt);
-    }
-    else
-    {
-        // 2 * half diagonal step cost
-        double cost = Config::getInstance().moveCostOffset + 2 * (Config::getInstance().moveCostOffsetSubmove + 
-            Config::getInstance().moveCostScalingSqrt * M_4TH_ROOT_1_2 + Config::getInstance().moveCostScalingLinear * M_SQRT1_2);
-        double maxDist = 0;
-        for(size_t i = 0; i < sourceBitMask.indices.size(); i++)
-        {
-            double dist = abs((int)(sourceBitMask.indices[i]) - (int)(targetBitMask.indices[i]));
-            if(dist > maxDist)
-            {
-                maxDist = dist;
-            }
-        }
-        if(maxDist > 1 + DOUBLE_EQUIVALENCE_THRESHOLD)
-        {
-            cost += costPerSubMove(maxDist - 1);
-        }
-
-        std::vector<int> sourceIndices;
-        for(size_t i = 0; i < sourceBitMask.count; i++)
-        {
-            if(sourceBitMask[i])
-            {
-                sourceIndices.push_back((int)i);
-            }
-        }
-        std::vector<int> targetIndices;
-        for(size_t i = 0; i < targetBitMask.count; i++)
-        {
-            if(targetBitMask[i])
-            {
-                targetIndices.push_back((int)i + colDimCompZone[0]);
-            }
-        }
-        auto pairing = bottleneckAssignmentMinimizeMaxDist(sourceIndices, targetIndices);
-        if(!pairing.has_value())
-        {
-            logger->warn("No pairing between indices could be found");
-            return std::pair(0,std::nullopt);
-        }
-        int maxPairingDist = 0;
-        for(const auto& [startIndex, targetIndex] : pairing.value())
-        {
-            if(abs(startIndex - targetIndex) > maxPairingDist)
-            {
-                maxPairingDist = abs(startIndex - targetIndex);
-            }
-        }
-        while(pairing.value().size() > maxColCount)
-        {
-            maxPairingDist = 0;
-            std::vector<std::pair<int,int>>::const_iterator elemToRemove;
-
-            for(std::vector<std::pair<int,int>>::const_iterator iter = pairing.value().cbegin(); iter != pairing.value().cend(); iter++)
-            {
-                if(abs(std::get<0>(*iter) - std::get<1>(*iter)) > maxPairingDist)
-                {
-                    maxPairingDist = abs(std::get<0>(*iter) - std::get<1>(*iter));
-                    elemToRemove = iter;
-                }
-            }
-            pairing.value().erase(elemToRemove);
-        }
-
-        if(maxPairingDist > 1)
-        {
-            cost += costPerSubMove(maxPairingDist - 1);
-        }
-        unsigned int fillableCols = pairing.value().size();
-
-        // If cost per filled gap is better than previous best, return new best move
-        if(!bestCostPerFilledGap.has_value() || (cost / (fillableCols * targetBitMask.indices.size()) < bestCostPerFilledGap.value()))
-        {
-            ParallelMove::Step start;
-            ParallelMove::Step end;
-            std::vector<double> *outerDimStartVector, *outerDimEndVector;
-
-            if(rowFirst)
-            {
-                start.colSelection.reserve(fillableCols);
-                start.rowSelection = std::vector<double>(sourceBitMask.indices.begin(), sourceBitMask.indices.end());
-                end.colSelection.reserve(fillableCols);
-                end.rowSelection = std::vector<double>(targetBitMask.indices.begin(), targetBitMask.indices.end());
-                outerDimStartVector = &start.colSelection;
-                outerDimEndVector = &end.colSelection;
-
-            }
-            else
-            {
-                start.rowSelection.reserve(fillableCols);
-                start.colSelection = std::vector<double>(sourceBitMask.indices.begin(), sourceBitMask.indices.end());
-                end.rowSelection.reserve(fillableCols);
-                end.colSelection = std::vector<double>(targetBitMask.indices.begin(), targetBitMask.indices.end());
-                outerDimStartVector = &start.rowSelection;
-                outerDimEndVector = &end.rowSelection;
-            }
-
-            for(const auto& [startIndex, targetIndex] : pairing.value())
-            {
-                outerDimStartVector->push_back(startIndex);
-                outerDimEndVector->push_back(targetIndex);
-            }
-
-            ParallelMove move = ParallelMove::fromStartAndEnd(stateArray, start, end, logger);
-            return std::pair(cost, move);
-        }
-    }
-    return std::pair(0,std::nullopt);
-}
-
 std::pair<std::vector<RowBitMask>, unsigned int> determineWhichRowsToUse(
     std::map<unsigned int,std::vector<RowBitMask>>& rowBitMasks, unsigned int targetIterCount, size_t lastConsideredIndexExclusive)
 {
@@ -1362,7 +1288,142 @@ std::pair<std::vector<RowBitMask>, unsigned int> determineWhichRowsToUse(
     return std::pair(usedRows, usedIterCount);
 }
 
-std::tuple<std::optional<ParallelMove>,int,double> moveSeveralRowsAndCols(ArrayAccessor& stateArray, 
+std::optional<ParallelMove> constructMoveWithSeveralRowsAndCols(ArrayAccessor& stateArray,
+    RowBitMask& source, RowBitMask& target, bool rowFirst,
+    size_t compZone[4], unsigned int maxCols, std::shared_ptr<spdlog::logger> logger)
+{
+    ParallelMove::Step start;
+    ParallelMove::Step end;
+    std::vector<double> *innerDimStartVector, *innerDimEndVector;
+
+    if(rowFirst)
+    {
+        start.rowSelection = std::vector<double>(source.indices.begin(), source.indices.end());
+        end.rowSelection = std::vector<double>(target.indices.begin(), target.indices.end());
+        innerDimStartVector = &start.colSelection;
+        innerDimEndVector = &end.colSelection;
+    }
+    else
+    {
+        start.colSelection = std::vector<double>(source.indices.begin(), source.indices.end());
+        end.colSelection = std::vector<double>(target.indices.begin(), target.indices.end());
+        innerDimStartVector = &start.rowSelection;
+        innerDimEndVector = &end.rowSelection;
+    }
+
+    size_t colDimCompZoneStart = rowFirst ? compZone[2] : compZone[0];
+    size_t colDimCompZoneEnd = rowFirst ? compZone[3] : compZone[1];
+    std::vector<int> sourceIndices, innerSourceIndices;
+    unsigned int sourceIndicesSmallerThanCompStart = 0;
+    for(size_t i = 0; i < source.count; i++)
+    {
+        if(i == colDimCompZoneStart)
+        {
+            sourceIndicesSmallerThanCompStart = sourceIndices.size();
+        }
+        if(source[i])
+        {
+            if(i >= colDimCompZoneStart && i < colDimCompZoneEnd)
+            {
+                innerSourceIndices.push_back(i);
+            }
+            sourceIndices.push_back(i);
+        }
+    }
+    std::vector<int> targetIndices;
+    for(size_t i = 0; i < target.count && targetIndices.size() < maxCols; i++)
+    {
+        if(target[i])
+        {
+            targetIndices.push_back(i + colDimCompZoneStart);
+        }
+    }
+
+    if(innerSourceIndices.size() > targetIndices.size())
+    {
+        // Use only source indices from comp zone if sufficient
+        auto pairing = bottleneckAssignmentMinimizeMaxDist(innerSourceIndices, targetIndices);
+        if(!pairing.has_value())
+        {
+            return std::nullopt;
+        }
+        for(auto& [startIndex, endIndex] : pairing.value())
+        {
+            innerDimStartVector->push_back(startIndex);
+            innerDimEndVector->push_back(endIndex);
+        }
+    }
+    else if(sourceIndices.size() == targetIndices.size())
+    {
+        for(size_t i = 0; i < sourceIndices.size(); i++)
+        {
+            innerDimStartVector->push_back(sourceIndices[i]);
+            innerDimEndVector->push_back(targetIndices[i]);
+        }
+    }
+    else if(sourceIndices.size() > targetIndices.size())
+    {
+        int excessSourceIndices = sourceIndices.size() - targetIndices.size();
+        int minIndicesFromLeft = sourceIndicesSmallerThanCompStart - excessSourceIndices;
+        if(minIndicesFromLeft < 0)
+        {
+            minIndicesFromLeft = 0;
+        }
+        std::optional<int> minDist = std::nullopt;
+        int bestIndicesFromLeft = minIndicesFromLeft;
+        for(int indicesFromLeft = minIndicesFromLeft; indicesFromLeft <= (int)sourceIndicesSmallerThanCompStart; indicesFromLeft++)
+        {
+            int currentDist = 0;
+            for(int i = 0; i < (int)targetIndices.size(); i++)
+            {
+                int dist = abs(sourceIndices[sourceIndicesSmallerThanCompStart - indicesFromLeft + i] - targetIndices[i]);
+                if(dist > currentDist)
+                {
+                    currentDist = dist;
+                }
+            }
+            if(minDist.has_value())
+            {
+                if(currentDist < minDist.value())
+                {
+                    minDist = currentDist;
+                    bestIndicesFromLeft = indicesFromLeft;
+                }
+                else
+                {
+                    break;
+                }
+            }
+            else
+            {
+                minDist = currentDist;
+                bestIndicesFromLeft = indicesFromLeft;
+            }
+        }
+        for(int i = 0; i < (int)targetIndices.size(); i++)
+        {
+            innerDimStartVector->push_back(sourceIndices[sourceIndicesSmallerThanCompStart - bestIndicesFromLeft + i]);
+            innerDimEndVector->push_back(targetIndices[i]);
+        }
+    }
+    else
+    {
+        auto pairing = bottleneckAssignmentMinimizeMaxDist(sourceIndices, targetIndices);
+        if(!pairing.has_value())
+        {
+            return std::nullopt;
+        }
+        for(auto& [startIndex, endIndex] : pairing.value())
+        {
+            innerDimStartVector->push_back(startIndex);
+            innerDimEndVector->push_back(endIndex);
+        }
+    }
+
+    return ParallelMove::fromStartAndEnd(stateArray, start, end, logger);
+}
+
+std::vector<std::tuple<ParallelMove,int,double>> moveSeveralRowsAndCols(ArrayAccessor& stateArray, 
     size_t compZone[4], std::shared_ptr<spdlog::logger> logger,
     std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>> alreadyMoved, 
     ArrayAccessor& targetGeometry)
@@ -1373,13 +1434,18 @@ std::tuple<std::optional<ParallelMove>,int,double> moveSeveralRowsAndCols(ArrayA
         !Config::getInstance().allowMovesBetweenCols || !Config::getInstance().allowMovesBetweenRows)
     {
         logger->info("Move limitations prevent method for complicated row and col move");
-        return std::tuple(std::nullopt, 0, DBL_MAX);
+        return std::vector<std::tuple<ParallelMove,int,double>>();
     }
 
     unsigned int roundedDownSqrtTotalAOD = sqrt(aodTotalLimit);
     std::optional<ParallelMove> bestMove = std::nullopt;
     unsigned int bestFillableGaps = 0;
     double bestCostPerFilledGap = 0;
+
+    RowBitMask bestStart, bestEnd;
+    bool bestRowFirst = false;
+    unsigned int bestColLimit;
+
     for(bool rowFirst : {true, false})
     {
         size_t rowDimCompZone[2];
@@ -1448,6 +1514,8 @@ std::tuple<std::optional<ParallelMove>,int,double> moveSeveralRowsAndCols(ArrayA
         std::vector<const RowBitMask*> outerRowsToInvestigate, innerRowsToInvestigate;
         unsigned int targetIterCount = MAX_MULTI_ITER_COUNT;
         unsigned int maxCols = colAODLimit;
+        
+        unsigned int approxOuterMaxOverlap = 2, approxInnerMaxOverlap = 2;
 
         #pragma omp parallel
         {
@@ -1464,10 +1532,14 @@ std::tuple<std::optional<ParallelMove>,int,double> moveSeveralRowsAndCols(ArrayA
                 {
                     maxCols = aodTotalLimit / rowCount;
                 }
+                std::map<unsigned int,std::vector<RowBitMask>> localInner, localOuter;
+                unsigned int maxLocalInner = 2, maxLocalOuter = 2;
 
+                // Prepare list of index combinations to investigate
                 #pragma omp barrier
                 #pragma omp single nowait
                 {
+                    approxOuterMaxOverlap = 2;
                     auto *tmpRef = prevBitMasksPerInnerRowSet;
                     prevBitMasksPerInnerRowSet = bitMasksPerInnerRowSet;
                     bitMasksPerInnerRowSet = tmpRef;
@@ -1481,6 +1553,7 @@ std::tuple<std::optional<ParallelMove>,int,double> moveSeveralRowsAndCols(ArrayA
                 }
                 #pragma omp single
                 {
+                    approxInnerMaxOverlap = 2;
                     auto *tmpRef = prevBitMasksPerOuterRowSet;
                     prevBitMasksPerOuterRowSet = bitMasksPerOuterRowSet;
                     bitMasksPerOuterRowSet = tmpRef;
@@ -1496,6 +1569,7 @@ std::tuple<std::optional<ParallelMove>,int,double> moveSeveralRowsAndCols(ArrayA
                     logger->debug("Investigating {} rows for outer section at count {}", rowsToUseOuter.size(), rowCount);
                     iterCount += usedIterations;
                 }
+                // Investigate index sets by adding additional indices
                 #pragma omp for nowait schedule(dynamic, 4)
                 for(const auto& prevBitMask : rowsToUseInner)
                 {
@@ -1503,33 +1577,77 @@ std::tuple<std::optional<ParallelMove>,int,double> moveSeveralRowsAndCols(ArrayA
                     {
                         RowBitMask combBitMask = RowBitMask::fromAnd(prevBitMask, bitMaskByInnerRow[i - rowDimCompZone[0]]);
                         unsigned int overlap = combBitMask.bitsSet();
-                        if((bitMasksPerInnerRowSet->empty() || 
-                            overlap >= bitMasksPerInnerRowSet->rbegin()->first * CUTOFF_OVERLAP_FRACTION) &&
+                        if(overlap >= approxInnerMaxOverlap * CUTOFF_OVERLAP_FRACTION &&
                             overlap >= bestFillableGaps / (rowCount + 1) && overlap >= 2)
                         {
-                            #pragma omp critical
-                            (*bitMasksPerInnerRowSet)[overlap].push_back(std::move(combBitMask));
+                            if(overlap > maxLocalInner)
+                            {
+                                maxLocalInner = overlap;
+                            }
+                            if(maxLocalInner > approxInnerMaxOverlap)
+                            {
+                                approxInnerMaxOverlap = maxLocalInner;
+                            }
+                            localInner[overlap].push_back(std::move(combBitMask));
                         }
                     }
                 }
-                #pragma omp for schedule(dynamic, 1)
+                #pragma omp critical
+                {
+                    for(auto rIter = localInner.rbegin(); rIter != localInner.rend(); rIter++)
+                    {
+                        unsigned int overlap = std::get<0>(*rIter);
+                        if(overlap < approxInnerMaxOverlap * CUTOFF_OVERLAP_FRACTION)
+                        {
+                            break;
+                        }
+                        for(auto combBitMask : std::get<1>(*rIter))
+                        {
+                            (*bitMasksPerInnerRowSet)[overlap].push_back(RowBitMask(combBitMask));
+                        }
+                    }
+                }
+                #pragma omp for nowait schedule(dynamic, 1)
                 for(const auto& prevBitMask : rowsToUseOuter)
                 {
                     for(size_t i = prevBitMask.indices.back() + 1; i < rows; i++)
                     {
                         RowBitMask combBitMask = RowBitMask::fromAnd(prevBitMask, bitMaskByOuterRow[i]);
                         unsigned int overlap = combBitMask.bitsSet();
-                        if((bitMasksPerOuterRowSet->empty() || 
-                            overlap >= bitMasksPerOuterRowSet->rbegin()->first * CUTOFF_OVERLAP_FRACTION) &&
+                        if(overlap >= approxOuterMaxOverlap * CUTOFF_OVERLAP_FRACTION &&
                             overlap >= bestFillableGaps / (rowCount + 1) && overlap >= 2)
                         {
-                            #pragma omp critical
-                            (*bitMasksPerOuterRowSet)[overlap].push_back(std::move(combBitMask));
+                            if(overlap > maxLocalOuter)
+                            {
+                                maxLocalOuter = overlap;
+                            }
+                            if(maxLocalOuter > approxOuterMaxOverlap)
+                            {
+                                approxOuterMaxOverlap = maxLocalOuter;
+                            }
+                            localOuter[overlap].push_back(std::move(combBitMask));
                         }
                     }
                 }
+                #pragma omp critical
+                {
+                    for(auto rIter = localOuter.rbegin(); rIter != localOuter.rend(); rIter++)
+                    {
+                        unsigned int overlap = std::get<0>(*rIter);
+                        if(overlap < approxOuterMaxOverlap * CUTOFF_OVERLAP_FRACTION)
+                        {
+                            break;
+                        }
+                        for(auto combBitMask : std::get<1>(*rIter))
+                        {
+                            (*bitMasksPerOuterRowSet)[overlap].push_back(RowBitMask(combBitMask));
+                        }
+                    }
+                }
+                #pragma omp barrier
                 if(!bitMasksPerInnerRowSet->empty() && !bitMasksPerOuterRowSet->empty())
                 {
+                    // Select index sets that are to be used in move creation
                     #pragma omp single nowait
                     {
                         outerRowsToInvestigate.clear();
@@ -1572,29 +1690,114 @@ std::tuple<std::optional<ParallelMove>,int,double> moveSeveralRowsAndCols(ArrayA
                             }
                         }
                     }
-                    #pragma omp for nowait collapse(2) schedule(dynamic, 1)
+                    // Approximate for each combination of start and end indices how good the resulting move would be
+                    #pragma omp for collapse(2) nowait schedule(dynamic, 1)
                     for(auto rowOuter : outerRowsToInvestigate)
                     {
                         for(auto rowInner : innerRowsToInvestigate)
                         {
-                            auto [cost,move] = checkComplexMoveCost(stateArray, compZone, logger, *rowOuter, 
-                                *rowInner, rowFirst, colDimCompZone, cols, maxCols, 
-                                bestMove.has_value() ? std::optional(bestCostPerFilledGap) : std::nullopt);
-                            if(move.has_value())
+                            // Calculate approximate move cost                    
+                            double cost = Config::getInstance().moveCostOffset + 2 * (Config::getInstance().moveCostOffsetSubmove + 
+                                Config::getInstance().moveCostScalingSqrt * M_4TH_ROOT_1_2 + 
+                                Config::getInstance().moveCostScalingLinear * M_SQRT1_2);
+
+                            int maxDist = 0;
+                            for(size_t i = 0; i < rowOuter->indices.size(); i++)
                             {
-                                unsigned int filledVacancies = move.value().steps[0].rowSelection.size() * 
-                                    move.value().steps[0].colSelection.size();
-                                double costPerFilledVacancy = move.value().cost() / filledVacancies;
-                                if(!bestMove.has_value() || costPerFilledVacancy < bestCostPerFilledGap)
+                                int dist = abs((int)rowOuter->indices[i] - (int)rowInner->indices[i]);
+                                if(dist > maxDist)
                                 {
-                                    #pragma omp critical
+                                    maxDist = dist;
+                                }
+                            }
+                            cost += costPerSubMove(maxDist);
+                            
+                            std::vector<int> sourceIndices;
+                            for(size_t i = 0; i < rowOuter->count; i++)
+                            {
+                                if((*rowOuter)[i])
+                                {
+                                    sourceIndices.push_back((int)i);
+                                }
+                            }
+                            std::vector<int> targetIndices;
+                            for(size_t i = 0; i < rowInner->count; i++)
+                            {
+                                if((*rowInner)[i])
+                                {
+                                    targetIndices.push_back((int)i + colDimCompZone[0]);
+                                }
+                            }
+
+                            int approxInnerDist = 0;
+                            size_t outerOffset = 0, innerOffset = 0;
+                            int excessOuterIndices = (int)rowOuter->bitsSet() - (int)rowInner->bitsSet();
+                            if(excessOuterIndices >= 0)
+                            {
+                                outerOffset = excessOuterIndices / 2;
+                            }
+                            else
+                            {
+                                innerOffset = -excessOuterIndices / 2;
+                            }
+                            for(size_t i = 0; i < sourceIndices.size() && i < targetIndices.size(); i++)
+                            {
+                                int dist = abs(sourceIndices[i + outerOffset] - targetIndices[i + innerOffset]);
+                                if(dist > approxInnerDist)
+                                {
+                                    approxInnerDist = dist;
+                                }
+                            }
+                            cost += costPerSubMove(approxInnerDist);
+
+                            // Calculate number of corrected target sites
+                            unsigned int minCols = rowOuter->bitsSet();
+                            if(rowInner->bitsSet() < minCols)
+                            {
+                                minCols = rowInner->bitsSet();
+                            }
+                            if(colAODLimit < minCols)
+                            {
+                                minCols = colAODLimit;
+                            }
+                            unsigned int correctedTargetSites = rowOuter->indices.size() * minCols;
+                            unsigned int rowsInCompZone = 0;
+                            for(auto index : rowOuter->indices)
+                            {
+                                if(index >= rowDimCompZone[0] && index < rowDimCompZone[1])
+                                {
+                                    rowsInCompZone++;
+                                }
+                            }
+                            unsigned colsInCompZone = 0;
+                            for(size_t i = colDimCompZone[0]; i < colDimCompZone[1]; i++)
+                            {
+                                if((*rowOuter)[i])
+                                {
+                                    colsInCompZone++;
+                                }
+                            }
+                            if(minCols < colsInCompZone)
+                            {
+                                colsInCompZone = minCols;
+                            }
+                            correctedTargetSites += rowsInCompZone * colsInCompZone;
+
+                            // Overwrite best-move buffer if new move is best
+                            double costPerCorrectedTargetSite = cost / (double)correctedTargetSites;
+                            if(correctedTargetSites > 0 && (bestFillableGaps == 0 || costPerCorrectedTargetSite < bestCostPerFilledGap))
+                            {
+                                #pragma omp critical
+                                {
+                                    if(correctedTargetSites > 0 && (bestFillableGaps == 0 || 
+                                        costPerCorrectedTargetSite < bestCostPerFilledGap))
                                     {
-                                        if(!bestMove.has_value() || costPerFilledVacancy < bestCostPerFilledGap)
-                                        {
-                                            bestCostPerFilledGap = costPerFilledVacancy;
-                                            bestFillableGaps = filledVacancies;
-                                            bestMove = move;
-                                        }
+                                        bestStart = RowBitMask(*rowOuter);
+                                        bestEnd = RowBitMask(*rowInner);
+                                        bestFillableGaps = correctedTargetSites;
+                                        bestCostPerFilledGap = costPerCorrectedTargetSite;
+                                        bestRowFirst = rowFirst;
+                                        bestColLimit = colAODLimit;
                                     }
                                 }
                             }
@@ -1605,23 +1808,30 @@ std::tuple<std::optional<ParallelMove>,int,double> moveSeveralRowsAndCols(ArrayA
         }
     }
 
-    if(bestMove.has_value())
+    // Create move for most beneficial locations
+    auto move = constructMoveWithSeveralRowsAndCols(stateArray, bestStart, bestEnd, bestRowFirst, compZone, bestColLimit, logger);
+
+    if(move.has_value())
     {
-        return std::tuple(bestMove.value(), bestFillableGaps, bestCostPerFilledGap);
+        double costPerCorrectedTargetSite = move.value().cost() / (double)bestFillableGaps;
+        logger->info("Best multi row and column move can fill {} at a cost of {} per gap", bestFillableGaps, costPerCorrectedTargetSite);
+        std::vector<std::tuple<ParallelMove,int,double>> bestMoves;
+        bestMoves.push_back(std::tuple(move.value(), bestFillableGaps, costPerCorrectedTargetSite));
+        return bestMoves;
     }
     else
     {
         logger->info("No multi row and column move could be found");
-        return std::tuple(std::nullopt, 0, DBL_MAX);
+        return std::vector<std::tuple<ParallelMove,int,double>>();
     }
 }
 
-std::tuple<std::optional<ParallelMove>,int,double> removeUnwantedAtoms(ArrayAccessor& stateArray, 
+std::vector<std::tuple<ParallelMove,int,double>> removeUnwantedAtoms(ArrayAccessor& stateArray, 
     size_t compZone[4], std::shared_ptr<spdlog::logger> logger,
     std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>> alreadyMoved, 
     ArrayAccessor& targetGeometry)
 {
-    std::optional<ParallelMove> bestMove = std::nullopt;
+    std::vector<std::tuple<ParallelMove,int,double>> bestMoves;
 
     std::vector<std::vector<int>> atomsToBeRemoved;
     atomsToBeRemoved.resize(compZone[1] - compZone[0]);
@@ -1635,7 +1845,7 @@ std::tuple<std::optional<ParallelMove>,int,double> removeUnwantedAtoms(ArrayAcce
             if(!atomPresent && atomRequired)
             {
                 logger->debug("No removal move returned as there are unfilled target sites.");
-                return std::tuple(std::nullopt, 0, DBL_MAX);
+                return bestMoves;
             }
             else if(atomPresent && !atomRequired)
             {
@@ -1647,7 +1857,7 @@ std::tuple<std::optional<ParallelMove>,int,double> removeUnwantedAtoms(ArrayAcce
     if(!Config::getInstance().allowMovesBetweenCols && !Config::getInstance().allowMovesBetweenRows)
     {
         logger->error("Cannot remove atom from within target area without allowing movement between rows or columns.");
-        return std::tuple(std::nullopt, 0, DBL_MAX);
+        return bestMoves;
     }
 
     size_t aodColLimit = Config::getInstance().aodColLimit;
@@ -1797,22 +2007,27 @@ std::tuple<std::optional<ParallelMove>,int,double> removeUnwantedAtoms(ArrayAcce
     else
     {
         logger->error("Cannot remove atom from within target area without allowing movement between rows or columns.");
-        return std::tuple(std::nullopt, 0, DBL_MAX);
+        return bestMoves;
     }
 
-    return std::tuple(move, removedUnusedAtoms, move.cost() / removedUnusedAtoms);
+    bestMoves.push_back(std::tuple(move, removedUnusedAtoms, move.cost() / removedUnusedAtoms));
+    return bestMoves;
 }
 
-std::tuple<std::optional<ParallelMove>,int,double> moveSingleIndex(ArrayAccessor& stateArray, 
+std::vector<std::tuple<ParallelMove,int,double>> moveSingleIndex(ArrayAccessor& stateArray, 
     size_t compZone[4], std::shared_ptr<spdlog::logger> logger,
     std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>> alreadyMoved, 
     ArrayAccessor& targetGeometry)
 {
+    std::vector<std::tuple<ParallelMove,int,double>> bestMoves;
+    std::vector<size_t> moveRanking;
+    double moveCostCutoffThreshold = DBL_MAX;
+
     if(!Config::getInstance().allowDiagonalMovement && !Config::getInstance().allowMovesBetweenCols && 
         !Config::getInstance().allowMovesBetweenRows)
     {
         logger->error("Single-index move needs any type of movement between rows or columns");
-        return std::tuple(std::nullopt, 0, DBL_MAX);
+        return bestMoves;
     }
     unsigned int aodTotalLimit = Config::getInstance().aodTotalLimit;
 
@@ -1820,9 +2035,6 @@ std::tuple<std::optional<ParallelMove>,int,double> moveSingleIndex(ArrayAccessor
         Config::getInstance().moveCostScalingSqrt * M_4TH_ROOT_1_2 + 
         Config::getInstance().moveCostScalingLinear * M_SQRT1_2);
 
-    std::optional<ParallelMove> bestMove = std::nullopt;
-    unsigned int bestCorrectedSites = 0;
-    double bestCostPerCorrectedSite = 0;
     for(bool rowFirst : {true, false})
     {
         size_t outerDimCompZone[2];
@@ -1886,7 +2098,7 @@ std::tuple<std::optional<ParallelMove>,int,double> moveSingleIndex(ArrayAccessor
                     }
                 }
             }
-            if(bestMove.has_value() && baseCost / (double)sourceIndices.size() > bestCostPerCorrectedSite)
+            if(!bestMoves.empty() && baseCost / (double)sourceIndices.size() > moveCostCutoffThreshold)
             {
                 continue;
             }
@@ -1906,7 +2118,8 @@ std::tuple<std::optional<ParallelMove>,int,double> moveSingleIndex(ArrayAccessor
             }
             for(size_t iTarget = iTargetStart; iTarget < iTargetEnd; iTarget++)
             {
-                if(bestMove.has_value() && baseCost / (double)targetIndices[iTarget - outerDimCompZone[0]].size() > bestCostPerCorrectedSite)
+                if(!bestMoves.empty() && baseCost / (double)targetIndices[iTarget - outerDimCompZone[0]].size() > 
+                    moveCostCutoffThreshold)
                 {
                     continue;
                 }
@@ -1961,7 +2174,7 @@ std::tuple<std::optional<ParallelMove>,int,double> moveSingleIndex(ArrayAccessor
                         }
                     }
 
-                    if(!bestMove.has_value() || approxCost / (double)correctedTargetSites < bestCostPerCorrectedSite)
+                    if(bestMoves.empty() || approxCost / (double)correctedTargetSites <= moveCostCutoffThreshold)
                     {
                         ParallelMove::Step start, end;
                         std::vector<double> *startVector, *endVector;
@@ -1988,13 +2201,17 @@ std::tuple<std::optional<ParallelMove>,int,double> moveSingleIndex(ArrayAccessor
 
                         ParallelMove move = ParallelMove::fromStartAndEnd(stateArray, start, end, logger);
                         auto costPerCorrectedTargetSite = move.cost() / correctedTargetSites;
-                        if(!bestMove.has_value() || costPerCorrectedTargetSite < bestCostPerCorrectedSite)
+                        if(costPerCorrectedTargetSite <= moveCostCutoffThreshold)
                         {
                             #pragma omp critical
                             {
-                                bestMove = move;
-                                bestCorrectedSites = correctedTargetSites;
-                                bestCostPerCorrectedSite = costPerCorrectedTargetSite;
+                                if(costPerCorrectedTargetSite <= moveCostCutoffThreshold)
+                                {
+                                    moveMoveToSortedMoveListIfUseful(bestMoves, moveRanking, 
+                                        move, correctedTargetSites, costPerCorrectedTargetSite);
+                                    moveCostCutoffThreshold = std::get<2>(bestMoves[moveRanking[0]]) / 
+                                        BENEFIT_FRACTION_TO_ALSO_EXECUTE;
+                                }
                             }
                         }
                     }
@@ -2010,20 +2227,25 @@ std::tuple<std::optional<ParallelMove>,int,double> moveSingleIndex(ArrayAccessor
         }
     }
 
-    logger->info("Best single index move can fill {} at a cost of {} per gap", bestCorrectedSites, bestCostPerCorrectedSite);
-    return std::tuple(bestMove, bestCorrectedSites, bestCostPerCorrectedSite);
+    logger->info("Best single index move function found {} moves", bestMoves.size());
+    if(!bestMoves.empty())
+    {
+        logger->info("Best single index move can fill {} at a cost of {} per gap", std::get<1>(bestMoves[0]), std::get<2>(bestMoves[0]));
+    }
+    return bestMoves;
 }
 
-std::tuple<std::optional<ParallelMove>,int,double> fillRowThroughSubspace(ArrayAccessor& stateArray, 
+std::vector<std::tuple<ParallelMove,int,double>> fillRowThroughSubspace(ArrayAccessor& stateArray, 
     size_t compZone[4], std::shared_ptr<spdlog::logger> logger,
     std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>>, 
     ArrayAccessor& targetGeometry)
 {
     unsigned int aodTotalLimit = Config::getInstance().aodTotalLimit;
 
-    std::optional<ParallelMove> bestMove = std::nullopt;
-    unsigned int bestCorrectedSites = 0;
-    double bestCostPerCorrectedSite = 0;
+    std::vector<std::tuple<ParallelMove,int,double>> bestMoves;
+    std::vector<size_t> moveRanking;
+    double moveCostCutoffThreshold = DBL_MAX;
+
     for(bool rowFirst : {true, false})
     {
         if((rowFirst && !Config::getInstance().allowMovesBetweenRows) || (!rowFirst && !Config::getInstance().allowMovesBetweenCols))
@@ -2042,25 +2264,25 @@ std::tuple<std::optional<ParallelMove>,int,double> fillRowThroughSubspace(ArrayA
         if(borderAtomsLeft == 0)
         {
             logger->error("Could not allocate memory");
-            return std::tuple(std::nullopt, 0, DBL_MAX);
+            return bestMoves;
         }
         unsigned int *borderAtomsRight = new (std::nothrow) unsigned int[outerDimCompZone[1] - outerDimCompZone[0]]();
         if(borderAtomsRight == 0)
         {
             logger->error("Could not allocate memory");
-            return std::tuple(std::nullopt, 0, DBL_MAX);
+            return bestMoves;
         }
         unsigned int *excessInternalAtoms = new (std::nothrow) unsigned int[outerDimCompZone[1] - outerDimCompZone[0]]();
         if(excessInternalAtoms == 0)
         {
             logger->error("Could not allocate memory");
-            return std::tuple(std::nullopt, 0, DBL_MAX);
+            return bestMoves;
         }
         unsigned int *emptyCompZoneLocations = new (std::nothrow) unsigned int[outerDimCompZone[1] - outerDimCompZone[0]]();
         if(emptyCompZoneLocations == 0)
         {
             logger->error("Could not allocate memory");
-            return std::tuple(std::nullopt, 0, DBL_MAX);
+            return bestMoves;
         }
         for(size_t i = outerDimCompZone[0]; i < outerDimCompZone[1]; i++)
         {
@@ -2130,7 +2352,7 @@ std::tuple<std::optional<ParallelMove>,int,double> fillRowThroughSubspace(ArrayA
                 // 2 * half diagonal step cost
                 double minCost = Config::getInstance().moveCostOffset + costPerSubMove(outerDist) + costPerSubMove((correctedSites - 1) / 2) + 2 * (Config::getInstance().moveCostOffsetSubmove + 
                         Config::getInstance().moveCostScalingSqrt * M_4TH_ROOT_1_2 + Config::getInstance().moveCostScalingLinear * M_SQRT1_2);
-                if(fillableGaps > 0 && (!bestMove.has_value() || minCost / correctedSites < bestCostPerCorrectedSite))
+                if(fillableGaps > 0 && (bestMoves.empty() || minCost / (double)correctedSites <= moveCostCutoffThreshold))
                 {
                     // Always use all internal excess atoms as they essentially count twice
                     unsigned int atomsFromOutside = 0;
@@ -2260,15 +2482,14 @@ std::tuple<std::optional<ParallelMove>,int,double> fillRowThroughSubspace(ArrayA
                     if(bestMoveInRow.has_value())
                     {
                         double costPerCorrectedSite = bestMoveInRow.value().cost() / (double)correctedSites;
-                        if(!bestMove.has_value() || costPerCorrectedSite < bestCostPerCorrectedSite)
+                        if(bestMoves.empty() || costPerCorrectedSite <= moveCostCutoffThreshold)
                         {
                             #pragma omp critical
                             {
-                                if(!bestMove.has_value() || costPerCorrectedSite < bestCostPerCorrectedSite)
+                                if(bestMoves.empty() || costPerCorrectedSite <= moveCostCutoffThreshold)
                                 {
-                                    bestMove = bestMoveInRow.value();
-                                    bestCorrectedSites = correctedSites;
-                                    bestCostPerCorrectedSite = costPerCorrectedSite;
+                                    moveMoveToSortedMoveListIfUseful(bestMoves, moveRanking, bestMoveInRow.value(), correctedSites, costPerCorrectedSite);
+                                    moveCostCutoffThreshold = std::get<2>(bestMoves[0]) / BENEFIT_FRACTION_TO_ALSO_EXECUTE;
                                 }
                             }
                         }
@@ -2284,18 +2505,23 @@ std::tuple<std::optional<ParallelMove>,int,double> fillRowThroughSubspace(ArrayA
         delete[] emptyCompZoneLocations;
     }
 
-    logger->info("Best subspace linear move can fill {} at a cost of {} per gap", bestCorrectedSites, bestCostPerCorrectedSite);
-    return std::tuple(bestMove, bestCorrectedSites, bestCostPerCorrectedSite);
+    logger->info("Best subspace linear move function found {} moves", bestMoves.size());
+    if(!bestMoves.empty())
+    {
+        logger->info("Best subspace linear move can fill {} at a cost of {} per gap", std::get<1>(bestMoves[0]), std::get<2>(bestMoves[0]));
+    }
+    return bestMoves;
 }
 
-std::tuple<std::optional<ParallelMove>,int,double> fillRowSidesDirectly(ArrayAccessor& stateArray, 
+std::vector<std::tuple<ParallelMove,int,double>> fillRowSidesDirectly(ArrayAccessor& stateArray, 
     size_t compZone[4], std::shared_ptr<spdlog::logger> logger,
     std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>> alreadyMoved, 
     ArrayAccessor& targetGeometry)
 {
-    std::optional<ParallelMove> bestMove = std::nullopt;
-    unsigned int bestCorrectedSites = 0;
-    double bestCostPerCorrectedSite = 0;
+    std::vector<std::tuple<ParallelMove,int,double>> bestMoves;
+    std::vector<size_t> moveRanking;
+    double moveCostCutoffThreshold = DBL_MAX;
+
     for(bool rowFirst : {true, false})
     {
         size_t outerDimCompZone[2];
@@ -2413,7 +2639,7 @@ std::tuple<std::optional<ParallelMove>,int,double> fillRowSidesDirectly(ArrayAcc
                 }
             }
             double minCost = Config::getInstance().moveCostOffset + costPerSubMove(1);
-            if(!bestMove.has_value() || (minCost / correctedSites < bestCostPerCorrectedSite))
+            if(bestMoves.empty() || (minCost / (double)correctedSites <= moveCostCutoffThreshold))
             {
                 ParallelMove::Step start;
                 ParallelMove::Step end;
@@ -2571,21 +2797,28 @@ std::tuple<std::optional<ParallelMove>,int,double> fillRowSidesDirectly(ArrayAcc
                 move.steps.push_back(std::move(start));
                 move.steps.push_back(std::move(end));
                 double costPerCorrectedSite = move.cost() / (double)actuallyCorrectedSites;
-                #pragma omp critical
+
+                if(bestMoves.empty() || costPerCorrectedSite <= moveCostCutoffThreshold)
                 {
-                    if(!bestMove.has_value() || costPerCorrectedSite < bestCostPerCorrectedSite)
+                    #pragma omp critical
                     {
-                        bestMove = move;
-                        bestCorrectedSites = actuallyCorrectedSites;
-                        bestCostPerCorrectedSite = costPerCorrectedSite;
+                        if(bestMoves.empty() || costPerCorrectedSite <= moveCostCutoffThreshold)
+                        {
+                            moveMoveToSortedMoveListIfUseful(bestMoves, moveRanking, move, actuallyCorrectedSites, costPerCorrectedSite);
+                            moveCostCutoffThreshold = std::get<2>(bestMoves[0]) / BENEFIT_FRACTION_TO_ALSO_EXECUTE;
+                        }
                     }
                 }
             }
         }
     }
 
-    logger->info("Best direct move can fill {} at a cost of {} per gap", bestCorrectedSites, bestCostPerCorrectedSite);
-    return std::tuple(bestMove, bestCorrectedSites, bestCostPerCorrectedSite);
+    logger->info("Best direct move function found {} moves", bestMoves.size());
+    if(!bestMoves.empty())
+    {
+        logger->info("Best direct move can fill {} at a cost of {} per gap", std::get<1>(bestMoves[0]), std::get<2>(bestMoves[0]));
+    }
+    return bestMoves;
 }
 
 bool analyzeArray(ArrayAccessor& stateArray, size_t compZone[4], int& incorrectTargetSites, 
@@ -2614,27 +2847,30 @@ bool findNextMove(ArrayAccessor& stateArray, size_t compZone[4], std::vector<Par
 {
     logger->debug("Finding next best move");
     std::vector<std::tuple<ParallelMove,int,double>> bestMoves;
+    std::vector<size_t> moveRanking;
     auto startTime = std::chrono::steady_clock::now();
 
     for(size_t i = 0; const auto& function : {fillRowSidesDirectly, fillRowThroughSubspace,
         moveSeveralRowsAndCols, removeUnwantedAtoms, moveSingleIndex})
     {
-        auto [move, correctedTargetSites, costPerCorrectedTargetSite] = 
-            function(stateArray, compZone, logger, alreadyMoved, targetGeometry);
-        if(move.has_value() && correctedTargetSites > 0)
+        for(auto [move, correctedTargetSites, costPerCorrectedTargetSite] : 
+            function(stateArray, compZone, logger, alreadyMoved, targetGeometry))
         {
-            for(const auto& improvingFunction : {improveComplexMove, improveMoveByAddingIndependentAtom})
+            if(correctedTargetSites > 0)
             {
-                auto [improvedMove, improvedCorrectedTargetSites, improvedCostPerCorrectedTargetSite] = improvingFunction(stateArray, 
-                    compZone, logger, move.value(), move.value().cost(), correctedTargetSites, alreadyMoved, targetGeometry);
-                if(improvedMove.has_value() && improvedCostPerCorrectedTargetSite < costPerCorrectedTargetSite)
+                for(const auto& improvingFunction : {improveComplexMove, improveMoveByAddingIndependentAtom})
                 {
-                    move = improvedMove.value();
-                    correctedTargetSites = improvedCorrectedTargetSites;
-                    costPerCorrectedTargetSite = improvedCostPerCorrectedTargetSite;
+                    auto [improvedMove, improvedCorrectedTargetSites, improvedCostPerCorrectedTargetSite] = improvingFunction(stateArray, 
+                        compZone, logger, move, move.cost(), correctedTargetSites, alreadyMoved, targetGeometry);
+                    if(improvedMove.has_value() && improvedCostPerCorrectedTargetSite < costPerCorrectedTargetSite)
+                    {
+                        move = improvedMove.value();
+                        correctedTargetSites = improvedCorrectedTargetSites;
+                        costPerCorrectedTargetSite = improvedCostPerCorrectedTargetSite;
+                    }
                 }
+                moveMoveToSortedMoveListIfUseful(bestMoves, moveRanking, move, correctedTargetSites, costPerCorrectedTargetSite);
             }
-            moveMoveToSortedMoveListIfUseful(bestMoves, move.value(), correctedTargetSites, costPerCorrectedTargetSite);
         }
         auto duration = std::chrono::steady_clock::now() - startTime;
         startTime = std::chrono::steady_clock::now();
@@ -2652,7 +2888,7 @@ bool findNextMove(ArrayAccessor& stateArray, size_t compZone[4], std::vector<Par
     }
     else
     {
-        auto& [move, bestCorrectedTargetSites, bestCostPerCorrectedTargetSite] = bestMoves[0];
+        auto& [move, bestCorrectedTargetSites, bestCostPerCorrectedTargetSite] = bestMoves[moveRanking[0]];
         if(!move.execute(stateArray, logger, alreadyMoved))
         {
             logger->error("Error when executing move");
@@ -2663,19 +2899,25 @@ bool findNextMove(ArrayAccessor& stateArray, size_t compZone[4], std::vector<Par
 
         for(size_t i = 1; i < bestMoves.size(); i++)
         {
-            auto [nextBestMove, nextBestCorrectedTargetSites, nextBestCostPerCorrectedTargetSite] = bestMoves[i];
+            auto [nextBestMove, nextBestCorrectedTargetSites, nextBestCostPerCorrectedTargetSite] = bestMoves[moveRanking[i]];
             std::optional<int> updatedCorrectedTargetSite = calcCorrectedTargetSite(nextBestMove, stateArray,
                 compZone, logger, alreadyMoved, targetGeometry);
             if(!updatedCorrectedTargetSite.has_value() || updatedCorrectedTargetSite.value() <= 0)
             {
+                logger->info("Next best move skipped as it could not be confirmed");
                 continue;
+            }
+            else if(updatedCorrectedTargetSite.value() <= 0)
+            {
+                logger->info("Next best move skipped as it corrects {} target sites", 
+                    updatedCorrectedTargetSite.value());
             }
             else
             {
                 nextBestCorrectedTargetSites = updatedCorrectedTargetSite.value();
                 logger->info("Investigated next-best move has cost per corrected site {}, threshold: {}", 
                     nextBestCostPerCorrectedTargetSite, bestCostPerCorrectedTargetSite / BENEFIT_FRACTION_TO_ALSO_EXECUTE);
-                if(nextBestCostPerCorrectedTargetSite < bestCostPerCorrectedTargetSite / BENEFIT_FRACTION_TO_ALSO_EXECUTE)
+                if(nextBestCostPerCorrectedTargetSite <= bestCostPerCorrectedTargetSite / BENEFIT_FRACTION_TO_ALSO_EXECUTE)
                 {
                     if(!nextBestMove.execute(stateArray, logger, alreadyMoved))
                     {
@@ -2793,7 +3035,7 @@ std::optional<std::vector<ParallelMove>> sortParallelInternal(
 
     for(int i = 0; auto duration : timePerMoveFunction)
     {
-        logger->debug("Total time taken by move function {}: {}ns", i++, duration.count());
+        logger->warn("Total time taken by move function {}: {}ns", i++, duration.count());
     }
 
     if(!sorted)

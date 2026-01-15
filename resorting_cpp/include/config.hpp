@@ -52,6 +52,145 @@ class Config
                 this->latticeByRowLogger->flush();
             }
         };
+        bool setProperty(std::string key, std::string val)
+        {
+            if(key.compare("logFileName") == 0)
+            {
+                this->logFileName = val;
+                std::shared_ptr<spdlog::logger> logger;
+                this->sequentialLogger = nullptr;
+                this->parallelLogger = nullptr;
+                this->greedyLatticeLogger = nullptr;
+                this->latticeByRowLogger = nullptr;
+            }
+            else if(key.compare("sequentialLoggerName") == 0)
+            {
+                this->sequentialLoggerName = val;
+                this->sequentialLogger = nullptr;
+            }
+            else if(key.compare("parallelLoggerName") == 0)
+            {
+                this->parallelLoggerName = val;
+                this->parallelLogger = nullptr;
+            }
+            else if(key.compare("greedyLatticeLoggerName") == 0)
+            {
+                this->greedyLatticeLoggerName = val;
+                this->greedyLatticeLogger = nullptr;
+            }
+            else if(key.compare("latticeByRowLoggerName") == 0)
+            {
+                this->latticeByRowLoggerName = val;
+                this->latticeByRowLogger = nullptr;
+            }
+            else if(key.compare("logLevel") == 0)
+            {
+                this->logLevel = val;
+                if(this->sequentialLogger != nullptr)
+                {
+                    this->sequentialLogger->set_level(spdlog::level::from_str(this->logLevel));
+                }
+                if(this->parallelLogger != nullptr)
+                {
+                    this->parallelLogger->set_level(spdlog::level::from_str(this->logLevel));
+                }
+                if(this->greedyLatticeLogger != nullptr)
+                {
+                    this->greedyLatticeLogger->set_level(spdlog::level::from_str(this->logLevel));
+                }
+                if(this->latticeByRowLogger != nullptr)
+                {
+                    this->latticeByRowLogger->set_level(spdlog::level::from_str(this->logLevel));
+                }
+            }
+            else if(key.compare("rowSpacing") == 0)
+            {
+                this->rowSpacing = std::stod(val);
+            }
+            else if(key.compare("columnSpacing") == 0)
+            {
+                this->columnSpacing = std::stod(val);
+            }
+            else if(key.compare("allowMovingEmptyTrapOntoOccupied") == 0)
+            {
+                std::transform(val.begin(), val.end(), val.begin(),
+                    [](unsigned char c){ return std::tolower(c); });
+                this->allowMovingEmptyTrapOntoOccupied = val.compare("true") == 0;
+            }
+            else if(key.compare("allowDiagonalMovement") == 0)
+            {
+                std::transform(val.begin(), val.end(), val.begin(),
+                    [](unsigned char c){ return std::tolower(c); });
+                this->allowDiagonalMovement = val.compare("true") == 0;
+            }
+            else if(key.compare("allowMovesBetweenRows") == 0)
+            {
+                std::transform(val.begin(), val.end(), val.begin(),
+                    [](unsigned char c){ return std::tolower(c); });
+                this->allowMovesBetweenRows = val.compare("true") == 0;
+            }
+            else if(key.compare("allowMovesBetweenCols") == 0)
+            {
+                std::transform(val.begin(), val.end(), val.begin(),
+                    [](unsigned char c){ return std::tolower(c); });
+                this->allowMovesBetweenCols = val.compare("true") == 0;
+            }
+            else if(key.compare("allowMultipleMovesPerAtom") == 0)
+            {
+                std::transform(val.begin(), val.end(), val.begin(),
+                    [](unsigned char c){ return std::tolower(c); });
+                this->allowMultipleMovesPerAtom = val.compare("true") == 0;
+            }
+            else if(key.compare("aodTotalLimit") == 0)
+            {
+                this->aodTotalLimit = std::stoi(val);
+            }
+            else if(key.compare("aodRowLimit") == 0)
+            {
+                this->aodRowLimit = std::stoi(val);
+            }
+            else if(key.compare("aodColLimit") == 0)
+            {
+                this->aodColLimit = std::stoi(val);
+            }
+            else if(key.compare("moveCostOffset") == 0)
+            {
+                this->moveCostOffset = stod(val);
+            }
+            else if(key.compare("moveCostOffsetSubmove") == 0)
+            {
+                this->moveCostOffsetSubmove = stod(val);
+            }
+            else if(key.compare("moveCostScalingSqrt") == 0)
+            {
+                this->moveCostScalingSqrt = stod(val);
+            }
+            else if(key.compare("moveCostScalingLinear") == 0)
+            {
+                this->moveCostScalingLinear = stod(val);
+            }
+            else if(key.compare("recommendedDistFromOccSites") == 0)
+            {
+                this->recommendedDistFromOccSites = stod(val);
+            }
+            else if(key.compare("recommendedDistFromEmptySites") == 0)
+            {
+                this->recommendedDistFromEmptySites = stod(val);
+            }
+            else if(key.compare("minDistFromOccSites") == 0)
+            {
+                this->minDistFromOccSites = stod(val);
+            }
+            else if(key.compare("maxSubmoveDistInPenalizedArea") == 0)
+            {
+                this->maxSubmoveDistInPenalizedArea = stod(val);
+            }
+            else
+            {
+                return false;
+            }
+            return true;
+        }
         bool readConfig(std::string filePath)
         {
             std::ifstream configFile(filePath, std::ios_base::openmode::_S_in);
@@ -75,138 +214,7 @@ class Config
                     std::string val = line.substr(delim + 1);
                     end_pos = std::remove(val.begin(), val.end(), ' ');
                     val.erase(end_pos, val.end());
-
-                    if(key.compare("logFileName") == 0)
-                    {
-                        this->logFileName = val;
-                        std::shared_ptr<spdlog::logger> logger;
-                        this->sequentialLogger = nullptr;
-                        this->parallelLogger = nullptr;
-                        this->greedyLatticeLogger = nullptr;
-                        this->latticeByRowLogger = nullptr;
-                    }
-                    else if(key.compare("sequentialLoggerName") == 0)
-                    {
-                        this->sequentialLoggerName = val;
-                        this->sequentialLogger = nullptr;
-                    }
-                    else if(key.compare("parallelLoggerName") == 0)
-                    {
-                        this->parallelLoggerName = val;
-                        this->parallelLogger = nullptr;
-                    }
-                    else if(key.compare("greedyLatticeLoggerName") == 0)
-                    {
-                        this->greedyLatticeLoggerName = val;
-                        this->greedyLatticeLogger = nullptr;
-                    }
-                    else if(key.compare("latticeByRowLoggerName") == 0)
-                    {
-                        this->latticeByRowLoggerName = val;
-                        this->latticeByRowLogger = nullptr;
-                    }
-                    else if(key.compare("logLevel") == 0)
-                    {
-                        this->logLevel = val;
-                        if(this->sequentialLogger != nullptr)
-                        {
-                            this->sequentialLogger->set_level(spdlog::level::from_str(this->logLevel));
-                        }
-                        if(this->parallelLogger != nullptr)
-                        {
-                            this->parallelLogger->set_level(spdlog::level::from_str(this->logLevel));
-                        }
-                        if(this->greedyLatticeLogger != nullptr)
-                        {
-                            this->greedyLatticeLogger->set_level(spdlog::level::from_str(this->logLevel));
-                        }
-                        if(this->latticeByRowLogger != nullptr)
-                        {
-                            this->latticeByRowLogger->set_level(spdlog::level::from_str(this->logLevel));
-                        }
-                    }
-                    else if(key.compare("rowSpacing") == 0)
-                    {
-                        this->rowSpacing = std::stod(val);
-                    }
-                    else if(key.compare("columnSpacing") == 0)
-                    {
-                        this->columnSpacing = std::stod(val);
-                    }
-                    else if(key.compare("allowMovingEmptyTrapOntoOccupied") == 0)
-                    {
-                        std::transform(val.begin(), val.end(), val.begin(),
-                            [](unsigned char c){ return std::tolower(c); });
-                        this->allowMovingEmptyTrapOntoOccupied = val.compare("true") == 0;
-                    }
-                    else if(key.compare("allowDiagonalMovement") == 0)
-                    {
-                        std::transform(val.begin(), val.end(), val.begin(),
-                            [](unsigned char c){ return std::tolower(c); });
-                        this->allowDiagonalMovement = val.compare("true") == 0;
-                    }
-                    else if(key.compare("allowMovesBetweenRows") == 0)
-                    {
-                        std::transform(val.begin(), val.end(), val.begin(),
-                            [](unsigned char c){ return std::tolower(c); });
-                        this->allowMovesBetweenRows = val.compare("true") == 0;
-                    }
-                    else if(key.compare("allowMovesBetweenCols") == 0)
-                    {
-                        std::transform(val.begin(), val.end(), val.begin(),
-                            [](unsigned char c){ return std::tolower(c); });
-                        this->allowMovesBetweenCols = val.compare("true") == 0;
-                    }
-                    else if(key.compare("allowMultipleMovesPerAtom") == 0)
-                    {
-                        std::transform(val.begin(), val.end(), val.begin(),
-                            [](unsigned char c){ return std::tolower(c); });
-                        this->allowMultipleMovesPerAtom = val.compare("true") == 0;
-                    }
-                    else if(key.compare("aodTotalLimit") == 0)
-                    {
-                        this->aodTotalLimit = std::stoi(val);
-                    }
-                    else if(key.compare("aodRowLimit") == 0)
-                    {
-                        this->aodRowLimit = std::stoi(val);
-                    }
-                    else if(key.compare("aodColLimit") == 0)
-                    {
-                        this->aodColLimit = std::stoi(val);
-                    }
-                    else if(key.compare("moveCostOffset") == 0)
-                    {
-                        this->moveCostOffset = stod(val);
-                    }
-                    else if(key.compare("moveCostOffsetSubmove") == 0)
-                    {
-                        this->moveCostOffsetSubmove = stod(val);
-                    }
-                    else if(key.compare("moveCostScalingSqrt") == 0)
-                    {
-                        this->moveCostScalingSqrt = stod(val);
-                    }
-                    else if(key.compare("moveCostScalingLinear") == 0)
-                    {
-                        this->moveCostScalingLinear = stod(val);
-                    }
-                    else if(key.compare("recommendedDistFromOccSites") == 0)
-                    {
-                        this->recommendedDistFromOccSites = stod(val);
-                    }
-                    else if(key.compare("recommendedDistFromEmptySites") == 0)
-                    {
-                        this->recommendedDistFromEmptySites = stod(val);
-                    }
-                    else if(key.compare("minDistFromOccSites") == 0)
-                    {
-                        this->minDistFromOccSites = stod(val);
-                    }
-                    else if(key.compare("maxSubmoveDistInPenalizedArea") == 0)
-                    {
-                        this->maxSubmoveDistInPenalizedArea = stod(val);
-                    }
+                    this->setProperty(key, val);
                 }
             }
             return true;
