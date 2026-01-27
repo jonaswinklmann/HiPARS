@@ -135,6 +135,37 @@ class Sorting:
         if target_geometry is None:
             target_geometry = np.ones((comp_zone_row_range[1] - comp_zone_row_range[0], comp_zone_col_range[1] - comp_zone_col_range[0]), dtype=bool)
         return resorting_cpp.sortLatticeByRowParallel(state_array, *comp_zone_row_range, *comp_zone_col_range, target_geometry)
+    
+    def fix_lattice_by_row_sorting_deficiencies(self, state_array : np.ndarray, comp_zone_row_range : tuple[int,int], 
+                                                comp_zone_col_range : tuple[int,int], target_geometry : np.ndarray | None):
+        """Function for fixing sorting deficiencies arising during sort_parallel_lattice_by_row
+        
+        :param state_array: The array of boolean values to be sorted
+        :type state_array: np.ndarray[bool]
+        :param comp_zone_row_range: Tuple (start,end) of start(inclusive) and end(exclusive) of rows in computational zone
+        :type comp_zone_row_range: tuple(int,int)
+        :param comp_zone_col_range: Tuple (start,end) of start(inclusive) and end(exclusive) of columns in computational zone
+        :type comp_zone_col_range: tuple(int,int)
+        :param target_geometry: The array of boolean values specifying the target geometry
+        :type target_geometry: np.ndarray[bool]
+        :raises TypeError: state_array must be numpy bool array
+        :raises TypeError: state_array must be dtype bool
+        :raises TypeError: target_geometry must be numpy bool array
+        :raises TypeError: target_geometry must be dtype bool
+        :return: A list of moves to sort array or None if sorting has failed. A ParallelMove contains .steps, which is a list of ParallelMoveStep objects, each containing .colSelection and .rowSelection, which are lists of doubles
+        :rtype: list[ParallelMove], optional
+        """
+        if not isinstance(state_array, np.ndarray):
+            raise TypeError("state_array must be numpy bool array")
+        if not state_array.dtype == bool:
+            raise TypeError("state_array must be dtype bool")
+        if not isinstance(target_geometry, np.ndarray):
+            raise TypeError("state_array must be numpy bool array")
+        if not target_geometry.dtype == bool:
+            raise TypeError("state_array must be dtype bool")
+        if target_geometry is None:
+            target_geometry = np.ones((comp_zone_row_range[1] - comp_zone_row_range[0], comp_zone_col_range[1] - comp_zone_col_range[0]), dtype=bool)
+        return resorting_cpp.fixLatticeByRowSortingDeficiencies(state_array, *comp_zone_row_range, *comp_zone_col_range, target_geometry)
 
     def flush_logs(self):
         """Function for flushing the logs

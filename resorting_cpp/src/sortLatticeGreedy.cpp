@@ -64,9 +64,17 @@ double moveCost(const std::vector<std::tuple<bool,size_t,int>>& path)
 
 Eigen::Array<bool,Eigen::Dynamic,Eigen::Dynamic> generateMask(double distance, double spacingFraction)
 {
-    int maskRowDist = distance / (Config::getInstance().rowSpacing * spacingFraction);
+    int maskRowDist = ceil((double)distance / (Config::getInstance().rowSpacing * spacingFraction)) - 1;
+    if(maskRowDist < 1)
+    {
+        maskRowDist = 0;
+    }
     int maskRows = 2 * maskRowDist + 1;
-    int maskColDist = distance / (Config::getInstance().columnSpacing * spacingFraction);
+    int maskColDist = ceil((double)distance / (Config::getInstance().columnSpacing * spacingFraction)) - 1;
+    if(maskColDist < 1)
+    {
+        maskColDist = 0;
+    }
     int maskCols = 2 * maskColDist + 1;
     Eigen::Array<bool,Eigen::Dynamic,Eigen::Dynamic> mask(maskRows, maskCols);
     
@@ -84,20 +92,37 @@ Eigen::Array<bool,Eigen::Dynamic,Eigen::Dynamic> generateMask(double distance, d
 
 Eigen::Array<unsigned int,Eigen::Dynamic,Eigen::Dynamic> generatePathway(size_t borderRows, size_t borderCols, 
     const py::EigenDRef<const Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &occupancy,
-    double distFromOcc = Config::getInstance().recommendedDistFromOccSites, double distFromEmpty = Config::getInstance().recommendedDistFromEmptySites)
+    double distFromOcc, double distFromEmpty)
 {
-    size_t pathwayRows = 2 * occupancy.rows() - 1 + 2 * borderRows;
-    size_t pathwayCols = 2 * occupancy.cols() - 1 + 2 * borderCols;
-
-    Eigen::Array<unsigned int,Eigen::Dynamic,Eigen::Dynamic> pathway = 
-        Eigen::Array<unsigned int,Eigen::Dynamic,Eigen::Dynamic>::Zero(pathwayRows, pathwayCols);
-
     auto occMask = generateMask(distFromOcc, 0.5);
     Eigen::Index halfOccRows = occMask.rows() / 2;
     Eigen::Index halfOccCols = occMask.cols() / 2;
     auto emptyMask = generateMask(distFromEmpty, 0.5);
     Eigen::Index halfEmptyRows = emptyMask.rows() / 2;
     Eigen::Index halfEmptyCols = emptyMask.cols() / 2;
+
+    if(borderRows < (size_t)halfOccRows)
+    {
+        borderRows = halfOccRows;
+    }
+    if(borderRows < (size_t)halfEmptyRows)
+    {
+        borderRows = halfEmptyRows;
+    }
+    if(borderCols < (size_t)halfOccCols)
+    {
+        borderCols = halfOccCols;
+    }
+    if(borderCols < (size_t)halfEmptyCols)
+    {
+        borderCols = halfEmptyCols;
+    }
+
+    size_t pathwayRows = 2 * occupancy.rows() - 1 + 2 * borderRows;
+    size_t pathwayCols = 2 * occupancy.cols() - 1 + 2 * borderCols;
+
+    Eigen::Array<unsigned int,Eigen::Dynamic,Eigen::Dynamic> pathway = 
+        Eigen::Array<unsigned int,Eigen::Dynamic,Eigen::Dynamic>::Zero(pathwayRows, pathwayCols);
 
     for(size_t r = 0; r < (size_t)occupancy.rows(); r++)
     {
