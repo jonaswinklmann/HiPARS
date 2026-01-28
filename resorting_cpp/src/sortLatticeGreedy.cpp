@@ -64,13 +64,13 @@ double moveCost(const std::vector<std::tuple<bool,size_t,int>>& path)
 
 Eigen::Array<bool,Eigen::Dynamic,Eigen::Dynamic> generateMask(double distance, double spacingFraction)
 {
-    int maskRowDist = ceil((double)distance / (Config::getInstance().rowSpacing * spacingFraction)) - 1;
+    int maskRowDist = floor((double)distance / (Config::getInstance().rowSpacing * spacingFraction));
     if(maskRowDist < 1)
     {
         maskRowDist = 0;
     }
     int maskRows = 2 * maskRowDist + 1;
-    int maskColDist = ceil((double)distance / (Config::getInstance().columnSpacing * spacingFraction)) - 1;
+    int maskColDist = floor((double)distance / (Config::getInstance().columnSpacing * spacingFraction));
     if(maskColDist < 1)
     {
         maskColDist = 0;

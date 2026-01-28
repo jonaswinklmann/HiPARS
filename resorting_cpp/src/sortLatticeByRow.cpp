@@ -1723,85 +1723,228 @@ bool sortArray(ArrayAccessor& stateArray,
     return true;
 }
 
-std::optional<std::vector<ParallelMove>> fixLatticeByRowSortingDeficiencies(
-    py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &stateArray, 
-    size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd, 
-    py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &targetGeometry)
+bool removeAtom(ArrayAccessor& stateArray, size_t row, size_t col, std::vector<ParallelMove>& moveList, 
+    Eigen::Ref<Eigen::Array<int,Eigen::Dynamic,Eigen::Dynamic>> pathway, size_t borderRows, size_t borderCols,
+    Eigen::Ref<Eigen::Array<unsigned int,Eigen::Dynamic,Eigen::Dynamic>> distancePathway, std::shared_ptr<spdlog::logger> logger)
 {
-    // Init logger
-    std::shared_ptr<spdlog::logger> logger = Config::getInstance().getLatticeByRowLogger();
-    if(!(compZoneRowEnd - compZoneRowStart == (size_t)targetGeometry.rows()))
+    std::vector<std::tuple<size_t,size_t>> coordsToSetDist1, coordsToSetDist2;
+    std::vector<std::tuple<size_t,size_t>> *coordsToSetDist = &coordsToSetDist1, *coordsToSetDistNext = &coordsToSetDist2;
+    coordsToSetDist->push_back(std::tuple(borderRows + 2 * row, borderCols + 2 * col));
+    unsigned int dist = 1;
+    distancePathway.setConstant(UINT_MAX);
+    distancePathway(borderRows + 2 * row, borderCols + 2 * col) = 0;
+    std::optional<std::tuple<size_t,size_t>> targetSite = std::nullopt;
+
+    int minRowDist = ceil(Config::getInstance().minDistFromOccSites / Config::getInstance().rowSpacing);
+    int minColDist = ceil(Config::getInstance().minDistFromOccSites / Config::getInstance().columnSpacing);
+
+    if(row == 0 || row == stateArray.rows() - 1 || col == 0 || col == stateArray.cols() - 1)
     {
-        logger->error("Comp zone does not have same number of rows as target geometry, aborting");
-        return std::nullopt;
-    }
-    if(!(compZoneColEnd - compZoneColStart == (size_t)targetGeometry.cols()))
-    {
-        logger->error("Comp zone does not have same number of cols as target geometry, aborting");
-        return std::nullopt;
-    }
-
-    EigenArrayAccessor stateArrayAccessor(stateArray);
-    EigenArrayAccessor targetArrayAccessor(targetGeometry);
-
-    // Differentiate between unusable (too close to each other) and usable atoms and add into per-index buffers
-    auto [usableAtomsPerXCIndex, unusableAtomsPerXCIndex, targetSitesPerXCIndex] = 
-        findUnusableAtoms(stateArrayAccessor, false, stateArray.rows(), stateArray.cols(), compZoneRowStart, 
-            compZoneRowEnd, compZoneColStart, compZoneColEnd, targetArrayAccessor);
-
-    std::vector<ParallelMove> moveList;
-    Eigen::Array<int,Eigen::Dynamic,Eigen::Dynamic> occMask = generateMask(Config::getInstance().minDistFromOccSites, 0.5).cast<int>();
-    Eigen::Index halfOccRows = occMask.rows() / 2;
-    Eigen::Index halfOccCols = occMask.cols() / 2;
-    int rowEndDist = ceil((double)Config::getInstance().minDistFromOccSites / Config::getInstance().rowSpacing);
-    int colEndDist = ceil((double)Config::getInstance().minDistFromOccSites / Config::getInstance().columnSpacing);
-    size_t borderRows = Config::getInstance().minDistFromOccSites / (Config::getInstance().rowSpacing / 2);
-    size_t borderCols = Config::getInstance().minDistFromOccSites / (Config::getInstance().columnSpacing / 2);
-    Eigen::Array<int,Eigen::Dynamic,Eigen::Dynamic> pathway = 
-        generatePathway(borderRows, borderCols, stateArray, Config::getInstance().minDistFromOccSites, 0).cast<int>();
-    auto distancePathway = Eigen::Array<unsigned int, Eigen::Dynamic, Eigen::Dynamic>(pathway.rows(), pathway.cols());
-
-    for(size_t row = 0; row < stateArray.rows(); row++)
-    {
-        for(size_t col : usableAtomsPerXCIndex[row])
+        ParallelMove move;
+        ParallelMove::Step start, end;
+        start.rowSelection.push_back(row);
+        start.colSelection.push_back(col);
+        end.rowSelection.push_back(row);
+        end.colSelection.push_back(col);
+        if(row == 0)
         {
-            if(!isInCompZone(row, col, compZoneRowStart, compZoneRowEnd, compZoneColStart, compZoneColEnd) || 
-                !targetGeometry(row - compZoneRowStart, col - compZoneColStart))
+            end.rowSelection[0] -= minRowDist;
+        }
+        else if(row == stateArray.rows() - 1)
+        {
+            end.rowSelection[0] += minRowDist;
+        }
+        else if(col == 0)
+        {
+            end.colSelection[0] -= minColDist;
+        }
+        else
+        {
+            end.colSelection[0] += minColDist;
+        }
+        move.steps.push_back(std::move(start));
+        move.steps.push_back(std::move(end));
+        move.execute(stateArray, logger);
+        moveList.push_back(std::move(move));
+        (pathway < 0).select(0, pathway);
+        return true;
+    }
+
+    while(!targetSite.has_value() && !coordsToSetDist->empty())
+    {
+        for(auto [startRow, startCol] : *coordsToSetDist)
+        {
+            for(int dir = 0; dir < 4; dir++)
             {
-                for(int dir = 0; dir < 4; dir++)
+                int newRow = startRow + ((dir % 2 == 0) ? dir - 1 : 0);
+                int newCol = startCol + ((dir % 2 == 1) ? dir - 2 : 0);
+                logger->debug("Pathway at {}/{}: {}", newRow, newCol, pathway(newRow, newCol));
+                if(newRow >= 0 && newRow < pathway.rows() && newCol >= 0 && newCol < pathway.cols() &&
+                    pathway(newRow, newCol) <= 0 && dist < distancePathway(newRow, newCol) && 
+                    !(newRow > borderRows && newRow < pathway.rows() - borderRows && (newRow - borderRows) % 2 == 0 && 
+                        newCol > borderCols && newCol < pathway.cols() - borderCols && (newCol - borderCols) % 2 == 0 && 
+                        stateArray((newRow - borderRows) / 2, (newCol - borderCols) / 2)))
                 {
-                    bool extractionAllowed = true;
-                    int rowDir = (dir % 2 == 0) ? dir - 1 : 0;
-                    int colDir = (dir % 2 == 1) ? dir - 2 : 0;
-                    int endDist = (dir % 2 == 0) ? rowEndDist : colEndDist;
-                    int endRow = row + rowDir * endDist;
-                    int endCol = col + colDir * endDist;
-                    if(endRow >= 0 && endRow < stateArray.rows() && endCol >= 0 && endCol < stateArray.cols())
+                    distancePathway(newRow, newCol) = dist;
+                    coordsToSetDistNext->push_back(std::tuple(newRow, newCol));
+                    if(newRow == borderRows || newRow == pathway.rows() - borderRows - 1 || 
+                        newCol == borderCols || newCol == pathway.cols() - borderCols - 1)
                     {
-                        for(int dist = 0; dist < endDist; dist++)
-                        {
-                            if(pathway(borderRows + (row + rowDir * dist) * 2, borderCols + (col + colDir * dist) * 2) > 1)
-                            {
-                                extractionAllowed = false;
-                                break;
-                            }
-                        }
-                        if(!extractionAllowed || pathway(borderRows + endRow * 2, borderCols + endCol * 2) > 0)
-                        {
-                            continue;
-                        }
-                        else
-                        {
-                            for(int dist = 0; dist < 2 * endDist; dist++)
-                            {
-                                pathway(borderRows + 2 * row + rowDir * dist, borderCols + 2 * col + colDir * dist) = 0;
-                            }
-                        }
+                        targetSite = std::tuple(newRow, newCol);
                     }
                 }
             }
+            if(targetSite.has_value())
+            {
+                break;
+            }
+        }
+        coordsToSetDist->clear();
+        auto tmp = coordsToSetDist;
+        coordsToSetDist = coordsToSetDistNext;
+        coordsToSetDistNext = tmp; 
+        dist++;
+    }
+    if(targetSite.has_value())
+    {
+        // Found target site to move atom to, retracing steps
+        ParallelMove move;
+        int currentDir = 0;
+        int currentRow = std::get<0>(targetSite.value());
+        int currentCol = std::get<1>(targetSite.value());
+        bool findingPath = true;
+        while(dist > 0 && findingPath)
+        {
+            for(int dirOffset = 0; dirOffset < 4; dirOffset++)
+            {
+                int dir = (currentDir + dirOffset) % 4;
+                int newRow = currentRow + ((dir % 2 == 0) ? dir - 1 : 0);
+                int newCol = currentCol + ((dir % 2 == 1) ? dir - 2 : 0);
+                if(distancePathway(newRow, newCol) < dist)
+                {
+                    dist = distancePathway(newRow, newCol);
+                    if(move.steps.empty())
+                    {
+                        ParallelMove::Step step;
+                        step.rowSelection.push_back((double)(currentRow - borderRows) / 2. - (double)((dir % 2 == 0) ? dir - 1 : 0) * minRowDist);
+                        step.colSelection.push_back((double)(currentCol - borderCols) / 2. - (double)((dir % 2 == 1) ? dir - 2 : 0) * minColDist);
+                        move.steps.push_back(std::move(step));
+                    }
+                    else if(dirOffset != 0)
+                    {
+                        ParallelMove::Step step;
+                        step.rowSelection.push_back((double)(currentRow - borderRows) / 2.);
+                        step.colSelection.push_back((double)(currentCol - borderCols) / 2.);
+                        move.steps.push_back(std::move(step));
+                    }
+                    currentRow = newRow;
+                    currentCol = newCol;
+                    currentDir = dir;
+                    break;
+                }
+                if(dirOffset == 3)
+                {
+                    logger->error("Path could not be retraced while fixing sorting deficiency. Aborting.");
+                    return -1;
+                }
+            }
+        }
+        logger->info("Successfully removed atom at {}/{} to {}/{}", 
+            row, col, move.steps[0].rowSelection[0], move.steps[0].colSelection[0]);
+        ParallelMove::Step end;
+        end.rowSelection.push_back((currentRow - borderRows) / 2);
+        end.colSelection.push_back((currentCol - borderCols) / 2);
+        move.steps.push_back(std::move(end));
+        std::reverse(move.steps.begin(), move.steps.end());
+        move.execute(stateArray, logger);
+        moveList.push_back(std::move(move));
+        (pathway < 0).select(0, pathway);
+        return true;
+    }
+    else
+    {
+        logger->warn("Could not remove atom at {}/{}", row, col);
+        return false;
+    }
+}
+
+bool removeSuperfluousAtoms(ArrayAccessor& stateArray, size_t compZoneRowStart, size_t compZoneRowEnd, 
+    size_t compZoneColStart, size_t compZoneColEnd, ArrayAccessor& targetGeometry, std::vector<ParallelMove>& moveList, 
+    Eigen::Ref<Eigen::Array<int,Eigen::Dynamic,Eigen::Dynamic>> pathway, size_t borderRows, size_t borderCols,
+    Eigen::Ref<Eigen::Array<unsigned int,Eigen::Dynamic,Eigen::Dynamic>> distancePathway,
+    Eigen::Ref<Eigen::Array<int,Eigen::Dynamic,Eigen::Dynamic>> occMask, std::shared_ptr<spdlog::logger> logger)
+{
+    Eigen::Array<int,Eigen::Dynamic,Eigen::Dynamic> blockingMask = generateMask(Config::getInstance().minDistFromOccSites).cast<int>();
+
+    Eigen::Index halfBlockingRows = blockingMask.rows() / 2;
+    Eigen::Index halfBlockingCols = blockingMask.cols() / 2;
+    blockingMask(halfBlockingRows, halfBlockingCols) = 0;
+
+    std::vector<std::tuple<size_t,size_t>> primaryAtomsToBeRemoved;
+    std::set<std::tuple<size_t,size_t>> allAtomsToBeRemoved;
+    for(size_t row = compZoneRowStart; row < compZoneRowEnd; row++)
+    {
+        for(size_t col = compZoneColStart; col < compZoneColEnd; col++)
+        {
+            if(!targetGeometry(row - compZoneRowStart, col - compZoneColStart) && stateArray(row, col))
+            {
+                // Remove superfluous atom
+                primaryAtomsToBeRemoved.push_back(std::tuple(row,col));
+            }
         }
     }
+
+
+    Eigen::Index halfOccRows = occMask.rows() / 2;
+    Eigen::Index halfOccCols = occMask.cols() / 2;
+    while(!primaryAtomsToBeRemoved.empty())
+    {
+        auto [row, col] = primaryAtomsToBeRemoved.back();
+        primaryAtomsToBeRemoved.pop_back();
+        allAtomsToBeRemoved.insert(std::tuple(row, col));
+
+        // Already remove pathway limitations around atoms-to-be-removed, as they might otherwise block each other
+        pathway(Eigen::seqN(2 * row + borderRows - halfOccRows, occMask.rows()), 
+            Eigen::seqN(2 * col + borderCols - halfOccCols, occMask.cols())) -= occMask;
+
+        for(Eigen::Index blockingRow = 0; blockingRow < blockingMask.rows(); blockingRow++)
+        {
+            for(Eigen::Index blockingCol = 0; blockingCol < blockingMask.cols(); blockingCol++)
+            {
+                int otherRow = (int)row + blockingRow - halfBlockingRows;
+                int otherCol = (int)col + blockingCol - halfBlockingCols;
+                if(blockingMask(blockingRow, blockingCol) && isInCompZone(otherRow, otherCol, 
+                        compZoneRowStart, compZoneRowEnd, compZoneColStart, compZoneColEnd) &&
+                    stateArray(otherRow, otherCol) && !allAtomsToBeRemoved.contains(std::tuple(otherRow, otherCol)))
+                {
+                    primaryAtomsToBeRemoved.push_back(std::tuple(otherRow, otherCol));
+                }
+            }
+        }
+
+    }
+
+    for(auto [row, col] : allAtomsToBeRemoved)
+    {
+        if(!removeAtom(stateArray, row, col, moveList, pathway, borderRows, borderCols, distancePathway, logger))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+int fixVacancies(ArrayAccessor& stateArray, size_t compZoneRowStart, size_t compZoneRowEnd, 
+    size_t compZoneColStart, size_t compZoneColEnd, ArrayAccessor& targetGeometry, std::vector<ParallelMove>& moveList, 
+    Eigen::Ref<Eigen::Array<int,Eigen::Dynamic,Eigen::Dynamic>> pathway, size_t borderRows, size_t borderCols,
+    Eigen::Ref<Eigen::Array<unsigned int,Eigen::Dynamic,Eigen::Dynamic>> distancePathway,
+    Eigen::Ref<Eigen::Array<int,Eigen::Dynamic,Eigen::Dynamic>> occMask, std::shared_ptr<spdlog::logger> logger)
+{
+    Eigen::Index halfOccRows = occMask.rows() / 2;
+    Eigen::Index halfOccCols = occMask.cols() / 2;
+
+    int problemsRemaining = 0;
 
     for(size_t row = compZoneRowStart; row < compZoneRowEnd; row++)
     {
@@ -1825,7 +1968,7 @@ std::optional<std::vector<ParallelMove>> fixLatticeByRowSortingDeficiencies(
                             int newRow = startRow + ((dir % 2 == 0) ? dir - 1 : 0);
                             int newCol = startCol + ((dir % 2 == 1) ? dir - 2 : 0);
                             if(newRow >= 0 && newRow < pathway.rows() && newCol >= 0 && newCol < pathway.cols() &&
-                                pathway(newRow, newCol) == 0 && dist < distancePathway(newRow, newCol))
+                                pathway(newRow, newCol) <= 0 && dist < distancePathway(newRow, newCol))
                             {
                                 distancePathway(newRow, newCol) = dist;
                                 coordsToSetDistNext->push_back(std::tuple(newRow, newCol));
@@ -1879,8 +2022,8 @@ std::optional<std::vector<ParallelMove>> fixLatticeByRowSortingDeficiencies(
                                 if(dirOffset != 0 || move.steps.empty())
                                 {
                                     ParallelMove::Step step;
-                                    step.rowSelection.push_back((currentRow - borderRows) / 2);
-                                    step.colSelection.push_back((currentCol - borderCols) / 2);
+                                    step.rowSelection.push_back((double)(currentRow - borderRows) / 2.);
+                                    step.colSelection.push_back((double)(currentCol - borderCols) / 2.);
                                     move.steps.push_back(std::move(step));
                                 }
                                 currentRow = newRow;
@@ -1891,7 +2034,7 @@ std::optional<std::vector<ParallelMove>> fixLatticeByRowSortingDeficiencies(
                             if(dirOffset == 3)
                             {
                                 logger->error("Path could not be retraced while fixing sorting deficiency. Aborting.");
-                                return std::nullopt;
+                                return -1;
                             }
                         }
                     }
@@ -1899,7 +2042,7 @@ std::optional<std::vector<ParallelMove>> fixLatticeByRowSortingDeficiencies(
                     end.rowSelection.push_back((currentRow - borderRows) / 2);
                     end.colSelection.push_back((currentCol - borderCols) / 2);
                     move.steps.push_back(std::move(end));
-                    move.execute(stateArrayAccessor, logger);
+                    move.execute(stateArray, logger);
                     pathway(Eigen::seqN(currentRow - halfOccRows, occMask.rows()), 
                         Eigen::seqN(currentCol - halfOccCols, occMask.cols())) += occMask;
                     pathway(Eigen::seqN(std::get<0>(sourceAtom.value()) - halfOccRows, occMask.rows()), 
@@ -1910,10 +2053,121 @@ std::optional<std::vector<ParallelMove>> fixLatticeByRowSortingDeficiencies(
                 else
                 {
                     logger->warn("Missing atom at {}/{} could not be fixed", row, col);
+                    problemsRemaining++;
+                }
+            }
+            else if(!targetGeometry(row - compZoneRowStart, col - compZoneColStart) && stateArray(row, col))
+            {
+                problemsRemaining++;
+            }
+        }
+    }
+
+    return problemsRemaining;
+}
+
+std::optional<std::vector<ParallelMove>> fixLatticeByRowSortingDeficiencies(
+    py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &stateArray, 
+    size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd, 
+    py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &targetGeometry)
+{
+    // Init logger
+    std::shared_ptr<spdlog::logger> logger = Config::getInstance().getLatticeByRowLogger();
+    if(!(compZoneRowEnd - compZoneRowStart == (size_t)targetGeometry.rows()))
+    {
+        logger->error("Comp zone does not have same number of rows as target geometry, aborting");
+        return std::nullopt;
+    }
+    if(!(compZoneColEnd - compZoneColStart == (size_t)targetGeometry.cols()))
+    {
+        logger->error("Comp zone does not have same number of cols as target geometry, aborting");
+        return std::nullopt;
+    }
+
+    EigenArrayAccessor stateArrayAccessor(stateArray);
+    EigenArrayAccessor targetArrayAccessor(targetGeometry);
+
+    std::vector<ParallelMove> moveList;
+
+    // Differentiate between unusable (too close to each other) and usable atoms and add into per-index buffers
+    auto [usableAtomsPerXCIndex, unusableAtomsPerXCIndex, targetSitesPerXCIndex] = 
+        findUnusableAtoms(stateArrayAccessor, false, stateArray.rows(), stateArray.cols(), compZoneRowStart, 
+            compZoneRowEnd, compZoneColStart, compZoneColEnd, targetArrayAccessor);
+
+    Eigen::Array<int,Eigen::Dynamic,Eigen::Dynamic> occMask = 
+        generateMask(Config::getInstance().minDistFromOccSites, 0.5).cast<int>();
+    int rowEndDist = ceil((double)Config::getInstance().minDistFromOccSites / Config::getInstance().rowSpacing);
+    int colEndDist = ceil((double)Config::getInstance().minDistFromOccSites / Config::getInstance().columnSpacing);
+    size_t borderRows = Config::getInstance().minDistFromOccSites / (Config::getInstance().rowSpacing / 2);
+    size_t borderCols = Config::getInstance().minDistFromOccSites / (Config::getInstance().columnSpacing / 2);
+    Eigen::Array<int,Eigen::Dynamic,Eigen::Dynamic> pathway = 
+        generatePathway(borderRows, borderCols, stateArray, Config::getInstance().minDistFromOccSites, 0).cast<int>();
+    auto distancePathway = Eigen::Array<unsigned int, Eigen::Dynamic, Eigen::Dynamic>(pathway.rows(), pathway.cols());
+
+    for(size_t row = 0; row < stateArray.rows(); row++)
+    {
+        for(size_t col : usableAtomsPerXCIndex[row])
+        {
+            if(!isInCompZone(row, col, compZoneRowStart, compZoneRowEnd, compZoneColStart, compZoneColEnd) || 
+                !targetGeometry(row - compZoneRowStart, col - compZoneColStart))
+            {
+                for(int dir = 0; dir < 4; dir++)
+                {
+                    bool extractionAllowed = true;
+                    int rowDir = (dir % 2 == 0) ? dir - 1 : 0;
+                    int colDir = (dir % 2 == 1) ? dir - 2 : 0;
+                    int endDist = (dir % 2 == 0) ? rowEndDist : colEndDist;
+                    int endRow = row + rowDir * endDist;
+                    int endCol = col + colDir * endDist;
+                    if(endRow >= 0 && endRow < stateArray.rows() && endCol >= 0 && endCol < stateArray.cols())
+                    {
+                        for(int dist = 0; dist < endDist; dist++)
+                        {
+                            if(pathway(borderRows + (row + rowDir * dist) * 2, borderCols + (col + colDir * dist) * 2) > 1)
+                            {
+                                extractionAllowed = false;
+                                break;
+                            }
+                        }
+                        if(!extractionAllowed || pathway(borderRows + endRow * 2, borderCols + endCol * 2) > 0)
+                        {
+                            continue;
+                        }
+                        else
+                        {
+                            for(int dist = 0; dist < 2 * endDist; dist++)
+                            {
+                                pathway(borderRows + 2 * row + rowDir * dist, borderCols + 2 * col + colDir * dist) = 0;
+                            }
+                        }
+                    }
                 }
             }
         }
     }
+
+    auto remainingProblems = fixVacancies(stateArrayAccessor, compZoneRowStart, compZoneRowEnd, compZoneColStart, compZoneColEnd,
+        targetArrayAccessor, moveList, pathway, borderRows, borderCols, distancePathway, occMask, logger);
+    if(remainingProblems > 0)
+    {
+        if(!removeSuperfluousAtoms(stateArrayAccessor, compZoneRowStart, compZoneRowEnd, 
+            compZoneColStart, compZoneColEnd, targetArrayAccessor, moveList, pathway, borderRows, borderCols, 
+            distancePathway, occMask, logger))
+        {
+            return std::nullopt;
+        }
+        remainingProblems = fixVacancies(stateArrayAccessor, compZoneRowStart, compZoneRowEnd, compZoneColStart, 
+                compZoneColEnd, targetArrayAccessor, moveList, pathway, borderRows, borderCols, distancePathway, occMask, logger);
+        if(remainingProblems != 0)
+        {
+            return std::nullopt;
+        }
+    }
+    else if(remainingProblems < 0)
+    {
+        return std::nullopt;
+    }
+
     return moveList;
 }
 
