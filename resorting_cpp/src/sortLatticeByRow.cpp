@@ -1682,6 +1682,18 @@ bool sortArray(ArrayAccessor& stateArray,
         findUnusableAtoms(stateArray, channelVertical, arraySizeXC, arraySizeAC, compZoneRowStart, 
             compZoneRowEnd, compZoneColStart, compZoneColEnd, targetGeometry);
 
+    size_t totalUsableAtoms = 0;
+    for(auto usableAtomsAtIndex : usableAtomsPerXCIndex)
+    {
+        totalUsableAtoms += usableAtomsAtIndex.size();
+    }
+    size_t totalTargetSites = 0;
+    for(auto targetSitesAtIndex : targetSitesPerXCIndex)
+    {
+        totalTargetSites += targetSitesAtIndex.size();
+    }
+    logger->info("Usable atoms: {}, Target sites: {}", totalUsableAtoms, totalTargetSites);
+
     // Determine were to start sorting. May either be from one side and iterate one way over the array or 
     // from the middle and outward simultaneously
     auto startingPosition = determineBestStartPosition(stateArray, channelVertical, 
@@ -1778,17 +1790,17 @@ bool removeAtom(ArrayAccessor& stateArray, size_t row, size_t col, std::vector<P
             {
                 int newRow = startRow + ((dir % 2 == 0) ? dir - 1 : 0);
                 int newCol = startCol + ((dir % 2 == 1) ? dir - 2 : 0);
-                logger->debug("Pathway at {}/{}: {}", newRow, newCol, pathway(newRow, newCol));
                 if(newRow >= 0 && newRow < pathway.rows() && newCol >= 0 && newCol < pathway.cols() &&
                     pathway(newRow, newCol) <= 0 && dist < distancePathway(newRow, newCol) && 
-                    !(newRow > borderRows && newRow < pathway.rows() - borderRows && (newRow - borderRows) % 2 == 0 && 
-                        newCol > borderCols && newCol < pathway.cols() - borderCols && (newCol - borderCols) % 2 == 0 && 
+                    !(newRow > (int)borderRows && newRow < (int)(pathway.rows() - borderRows) && 
+                        newCol > (int)borderCols && newCol < (int)(pathway.cols() - borderCols) && 
+                        (newRow - borderRows) % 2 == 0 && (newCol - borderCols) % 2 == 0 && 
                         stateArray((newRow - borderRows) / 2, (newCol - borderCols) / 2)))
                 {
                     distancePathway(newRow, newCol) = dist;
                     coordsToSetDistNext->push_back(std::tuple(newRow, newCol));
-                    if(newRow == borderRows || newRow == pathway.rows() - borderRows - 1 || 
-                        newCol == borderCols || newCol == pathway.cols() - borderCols - 1)
+                    if(newRow == (int)borderRows || newRow == (int)(pathway.rows() - borderRows - 1) || 
+                        newCol == (int)borderCols || newCol == (int)(pathway.cols() - borderCols - 1))
                     {
                         targetSite = std::tuple(newRow, newCol);
                     }
@@ -1868,7 +1880,7 @@ bool removeAtom(ArrayAccessor& stateArray, size_t row, size_t col, std::vector<P
     }
 }
 
-bool removeSuperfluousAtoms(ArrayAccessor& stateArray, size_t compZoneRowStart, size_t compZoneRowEnd, 
+int removeSuperfluousAtoms(ArrayAccessor& stateArray, size_t compZoneRowStart, size_t compZoneRowEnd, 
     size_t compZoneColStart, size_t compZoneColEnd, ArrayAccessor& targetGeometry, std::vector<ParallelMove>& moveList, 
     Eigen::Ref<Eigen::Array<int,Eigen::Dynamic,Eigen::Dynamic>> pathway, size_t borderRows, size_t borderCols,
     Eigen::Ref<Eigen::Array<unsigned int,Eigen::Dynamic,Eigen::Dynamic>> distancePathway,
@@ -1924,15 +1936,16 @@ bool removeSuperfluousAtoms(ArrayAccessor& stateArray, size_t compZoneRowStart, 
 
     }
 
+    int remainingAtomsToRemove = 0;
     for(auto [row, col] : allAtomsToBeRemoved)
     {
         if(!removeAtom(stateArray, row, col, moveList, pathway, borderRows, borderCols, distancePathway, logger))
         {
-            return false;
+            remainingAtomsToRemove++;
         }
     }
 
-    return true;
+    return remainingAtomsToRemove;
 }
 
 int fixVacancies(ArrayAccessor& stateArray, size_t compZoneRowStart, size_t compZoneRowEnd, 
@@ -1972,8 +1985,9 @@ int fixVacancies(ArrayAccessor& stateArray, size_t compZoneRowStart, size_t comp
                             {
                                 distancePathway(newRow, newCol) = dist;
                                 coordsToSetDistNext->push_back(std::tuple(newRow, newCol));
-                                if(newRow > borderRows && newRow < pathway.rows() - borderRows && (newRow - borderRows) % 2 == 0 && 
-                                    newCol > borderCols && newCol < pathway.cols() - borderCols && (newCol - borderCols) % 2 == 0)
+                                if(newRow > (int)borderRows && newRow < (int)(pathway.rows() - borderRows) && 
+                                    newCol > (int)borderCols && newCol < (int)(pathway.cols() - borderCols) && 
+                                    (newRow - borderRows) % 2 == 0 && (newCol - borderCols) % 2 == 0)
                                 {
                                     int trapRow = (newRow - borderRows) / 2;
                                     int trapCol = (newCol - borderCols) / 2;
@@ -2104,7 +2118,7 @@ std::optional<std::vector<ParallelMove>> fixLatticeByRowSortingDeficiencies(
         generatePathway(borderRows, borderCols, stateArray, Config::getInstance().minDistFromOccSites, 0).cast<int>();
     auto distancePathway = Eigen::Array<unsigned int, Eigen::Dynamic, Eigen::Dynamic>(pathway.rows(), pathway.cols());
 
-    for(size_t row = 0; row < stateArray.rows(); row++)
+    for(int row = 0; row < stateArray.rows(); row++)
     {
         for(size_t col : usableAtomsPerXCIndex[row])
         {
@@ -2150,10 +2164,20 @@ std::optional<std::vector<ParallelMove>> fixLatticeByRowSortingDeficiencies(
         targetArrayAccessor, moveList, pathway, borderRows, borderCols, distancePathway, occMask, logger);
     if(remainingProblems > 0)
     {
-        if(!removeSuperfluousAtoms(stateArrayAccessor, compZoneRowStart, compZoneRowEnd, 
+        int previouslyRemainingSuperfluousAtoms = INT_MAX;
+        int remainingSuperfluousAtoms = removeSuperfluousAtoms(stateArrayAccessor, compZoneRowStart, compZoneRowEnd, 
             compZoneColStart, compZoneColEnd, targetArrayAccessor, moveList, pathway, borderRows, borderCols, 
-            distancePathway, occMask, logger))
+            distancePathway, occMask, logger);
+        while(remainingSuperfluousAtoms > 0 && remainingSuperfluousAtoms < previouslyRemainingSuperfluousAtoms)
         {
+            previouslyRemainingSuperfluousAtoms = remainingSuperfluousAtoms;
+            remainingSuperfluousAtoms = removeSuperfluousAtoms(stateArrayAccessor, compZoneRowStart, compZoneRowEnd, 
+                compZoneColStart, compZoneColEnd, targetArrayAccessor, moveList, pathway, borderRows, borderCols, 
+                distancePathway, occMask, logger);
+        }
+        if(remainingSuperfluousAtoms > 0)
+        {
+            logger->error("Superfluous atom in the computational zone could not be removed after multiple removal rounds. Aborting");
             return std::nullopt;
         }
         remainingProblems = fixVacancies(stateArrayAccessor, compZoneRowStart, compZoneRowEnd, compZoneColStart, 
