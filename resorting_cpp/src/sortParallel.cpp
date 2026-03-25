@@ -716,6 +716,101 @@ bool ParallelMove::execute(ArrayAccessor& stateArray, std::shared_ptr<spdlog::lo
     return true;
 }
 
+bool ParallelMove::extendToUseAllTones(unsigned int stateArrayRows, unsigned int stateArrayCols,
+    std::shared_ptr<spdlog::logger> logger, bool considerSpacing)
+{
+    if(Config::getInstance().alwaysGenerateAllAODTones)
+    {
+        int requiredRowTones = Config::getInstance().aodRowLimit;
+        int requiredColTones = Config::getInstance().aodColLimit;
+        if(Config::getInstance().aodTotalLimit < requiredRowTones * requiredColTones)
+        {
+            logger->warn("AOD tone count cannot be maximized as total trap limit is smaller than row and column limit would allow");
+            return false;
+        }
+        else if(this->steps.empty())
+        {
+            logger->warn("Empty move cannot meaningfully be extended to use all tones");
+            return false;
+        }
+        else if(this->steps[0].rowSelection.size() > requiredRowTones || this->steps[0].colSelection.size() > requiredColTones)
+        {
+            logger->warn("Move already uses more tones than allowed so cannot be extended to use even more");
+            return false;
+        }
+        else
+        {
+            requiredRowTones -= this->steps[0].rowSelection.size();
+            requiredColTones -= this->steps[0].colSelection.size();
+
+            if(requiredRowTones > 0 || requiredColTones > 0)
+            {
+                int rowDist = 1, colDist = 1;
+                if(considerSpacing)
+                {
+                    if(Config::getInstance().minDistFromOccSites > Config::getInstance().rowSpacing)
+                    {
+                        rowDist = ceil(Config::getInstance().rowSpacing / Config::getInstance().minDistFromOccSites);
+                    }
+                    if(Config::getInstance().minDistFromOccSites > Config::getInstance().columnSpacing)
+                    {
+                        colDist = ceil(Config::getInstance().columnSpacing / Config::getInstance().minDistFromOccSites);
+                    }
+                }
+                int minRowTone = -rowDist, maxRowTone = stateArrayRows - 1 + rowDist;
+                int minColTone = -colDist, maxColTone = stateArrayCols - 1 + colDist;
+                for(const ParallelMove::Step& step : this->steps)
+                {
+                    for(const auto& row : step.rowSelection)
+                    {
+                        if(row - rowDist < minRowTone)
+                        {
+                            minRowTone = row - rowDist;
+                        }
+                        if(row + rowDist > maxRowTone)
+                        {
+                            maxRowTone = row + rowDist;
+                        }
+                    }
+                    for(const auto& col : step.colSelection)
+                    {
+                        if(col - colDist < minColTone)
+                        {
+                            minColTone = col - colDist;
+                        }
+                        if(col + colDist > maxColTone)
+                        {
+                            maxColTone = col + colDist;
+                        }
+                    }
+                }
+
+                // Add tones to move
+                for(ParallelMove::Step& step : this->steps)
+                {
+                    for(int i = 0; i < (requiredRowTones + 1) / 2; i++)
+                    {
+                        step.rowSelection.insert(step.rowSelection.begin(), minRowTone - i);
+                    }
+                    for(int i = 0; i < requiredRowTones / 2; i++)
+                    {
+                        step.rowSelection.push_back(maxRowTone + i);
+                    }
+                    for(int i = 0; i < (requiredColTones + 1) / 2; i++)
+                    {
+                        step.colSelection.insert(step.colSelection.begin(), minColTone - i);
+                    }
+                    for(int i = 0; i < requiredColTones / 2; i++)
+                    {
+                        step.colSelection.push_back(maxColTone + i);
+                    }
+                }
+            }
+        }
+    }
+    return true;
+}
+
 std::tuple<std::optional<ParallelMove>,int,double> improveMoveByAddingIndependentAtom(
     ArrayAccessor& stateArray, size_t compZone[4], std::shared_ptr<spdlog::logger> logger, ParallelMove move, 
     double cost, unsigned int correctedTargetSites,
@@ -3035,7 +3130,7 @@ std::optional<std::vector<ParallelMove>> sortParallelInternal(
 
     for(int i = 0; auto duration : timePerMoveFunction)
     {
-        logger->warn("Total time taken by move function {}: {}ns", i++, duration.count());
+        logger->info("Total time taken by move function {}: {}ns", i++, duration.count());
     }
 
     if(!sorted)
@@ -3044,6 +3139,14 @@ std::optional<std::vector<ParallelMove>> sortParallelInternal(
         analyzeArray(stateArray, compZone, incorrectTargetSites, targetGeometry, logger);
         return std::nullopt;
     }
+    if(Config::getInstance().alwaysGenerateAllAODTones)
+    {
+        for(auto& move : moves)
+        {
+            move.extendToUseAllTones(stateArray.rows(), stateArray.cols(), logger, false);
+        }
+    }
+
     return moves;
 }
 

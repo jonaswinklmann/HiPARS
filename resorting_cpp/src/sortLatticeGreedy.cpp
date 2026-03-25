@@ -4047,6 +4047,14 @@ bool sortLatticeGreedyMain(py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eige
     }
     logger->info(strstream.str());
 
+    if(Config::getInstance().alwaysGenerateAllAODTones)
+    {
+        for(auto& move : moveList)
+        {
+            move.extendToUseAllTones(stateArray.rows(), stateArray.cols(), logger, false);
+        }
+    }
+
     return true;
 }
 

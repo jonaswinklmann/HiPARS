@@ -1091,14 +1091,14 @@ bool sortRemainingRowsOrCols(ArrayAccessor& stateArray, int startIndex,
         indexXC[0] = -1;
         indexXC[1] = sortingChannelWidth + 1;
         currentTargetIndexXC[0] = -1;
-        currentTargetIndexXC[1] = compZoneXCStart;
+        currentTargetIndexXC[1] = 0;
     }
     else if(startIndex == (int)arraySizeXC)
     {
         indexXC[0] = arraySizeXC;
         indexXC[1] = arraySizeXC - sortingChannelWidth - 2;
         currentTargetIndexXC[0] = arraySizeXC;
-        currentTargetIndexXC[1] = compZoneXCEnd - 1;
+        currentTargetIndexXC[1] = arraySizeXC - 1;
     }
     else
     {
@@ -2192,6 +2192,14 @@ std::optional<std::vector<ParallelMove>> fixLatticeByRowSortingDeficiencies(
         return std::nullopt;
     }
 
+    if(Config::getInstance().alwaysGenerateAllAODTones)
+    {
+        for(auto& move : moveList)
+        {
+            move.extendToUseAllTones(stateArray.rows(), stateArray.cols(), logger, false);
+        }
+    }
+
     return moveList;
 }
 
@@ -2281,6 +2289,14 @@ std::optional<std::vector<ParallelMove>> sortLatticeByRowParallel(
         endstrstream << "\n";
     }
     logger->info(endstrstream.str());
+
+    if(Config::getInstance().alwaysGenerateAllAODTones)
+    {
+        for(auto& move : moveList)
+        {
+            move.extendToUseAllTones(stateArray.rows(), stateArray.cols(), logger, false);
+        }
+    }
 
     return moveList;
 }
