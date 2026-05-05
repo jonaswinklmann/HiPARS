@@ -24,9 +24,10 @@ class Config
         Config() : sequentialLogger(nullptr), parallelLogger(nullptr), greedyLatticeLogger(nullptr), latticeByRowLogger(nullptr), 
             logFileName("sorting.log"), sequentialLoggerName("sequentialSortingLogger"), parallelLoggerName("parallelSortingLogger"),
             greedyLatticeLoggerName("greedyLatticeSortingLogger"), latticeByRowLoggerName("latticeByRowSortingLogger"), logLevel("info"),
-            rowSpacing(1), columnSpacing(1), allowMovingEmptyTrapOntoOccupied(true), allowDiagonalMovement(true), 
+            rowSpacing(1), columnSpacing(1), minAodSpacing(0), allowMovingEmptyTrapOntoOccupied(true), allowDiagonalMovement(true), 
             allowMovesBetweenRows(true), allowMovesBetweenCols(true), allowMultipleMovesPerAtom(false), alwaysGenerateAllAODTones(false), 
-            aodTotalLimit(256), aodRowLimit(16), aodColLimit(16), moveCostOffset(150), moveCostOffsetSubmove(0), moveCostScalingSqrt(0), moveCostScalingLinear(0.1),
+            verticalSortingChannel(std::nullopt), aodTotalLimit(256), aodRowLimit(16), aodColLimit(16), moveCostOffset(150), 
+            moveCostOffsetSubmove(0), moveCostScalingSqrt(0), moveCostScalingLinear(0.1),
             recommendedDistFromOccSites(1), recommendedDistFromEmptySites(0.1), minDistFromOccSites(1), maxSubmoveDistInPenalizedArea(1.5) {}
 
         std::shared_ptr<spdlog::logger> sequentialLogger, parallelLogger, greedyLatticeLogger, latticeByRowLogger;
@@ -111,6 +112,10 @@ class Config
             {
                 this->columnSpacing = std::stod(val);
             }
+            else if(key.compare("minAodSpacing") == 0)
+            {
+                this->minAodSpacing = std::stod(val);
+            }
             else if(key.compare("allowMovingEmptyTrapOntoOccupied") == 0)
             {
                 std::transform(val.begin(), val.end(), val.begin(),
@@ -146,6 +151,12 @@ class Config
                 std::transform(val.begin(), val.end(), val.begin(),
                     [](unsigned char c){ return std::tolower(c); });
                 this->alwaysGenerateAllAODTones = val.compare("true") == 0;
+            }
+            else if(key.compare("verticalSortingChannel") == 0)
+            {
+                std::transform(val.begin(), val.end(), val.begin(),
+                    [](unsigned char c){ return std::tolower(c); });
+                this->verticalSortingChannel = val.compare("true") == 0;
             }
             else if(key.compare("aodTotalLimit") == 0)
             {
@@ -280,8 +291,10 @@ class Config
         std::string greedyLatticeLoggerName;
         std::string latticeByRowLoggerName;
         std::string logLevel;
-        double rowSpacing, columnSpacing;
-        bool allowMovingEmptyTrapOntoOccupied, allowDiagonalMovement, allowMovesBetweenRows, allowMovesBetweenCols, allowMultipleMovesPerAtom, alwaysGenerateAllAODTones;
+        double rowSpacing, columnSpacing, minAodSpacing;
+        bool allowMovingEmptyTrapOntoOccupied, allowDiagonalMovement, allowMovesBetweenRows, allowMovesBetweenCols, 
+            allowMultipleMovesPerAtom, alwaysGenerateAllAODTones;
+        std::optional<bool> verticalSortingChannel;
         unsigned int aodTotalLimit, aodRowLimit, aodColLimit;
         double moveCostOffset, moveCostOffsetSubmove, moveCostScalingSqrt, moveCostScalingLinear;
         double recommendedDistFromOccSites, recommendedDistFromEmptySites, minDistFromOccSites, maxSubmoveDistInPenalizedArea;

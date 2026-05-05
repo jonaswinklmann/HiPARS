@@ -31,8 +31,8 @@ public:
     double cost() const;
     bool execute(ArrayAccessor& stateArray, std::shared_ptr<spdlog::logger> logger,
         std::optional<py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>> alreadyMoved = std::nullopt) const;
-    bool extendToUseAllTones(unsigned int stateArrayRows, unsigned int stateArrayCols, 
-        std::shared_ptr<spdlog::logger> logger, bool considerSpacing);
+    bool extendToUseAllTones(unsigned int stateArrayRows, unsigned int stateArrayCols, std::shared_ptr<spdlog::logger> logger, bool considerSpacing,
+        std::optional<std::vector<int>> bufferRows = std::nullopt, std::optional<std::vector<int>> bufferCols = std::nullopt);
 };
 
 std::optional<std::vector<ParallelMove>> sortParallel(

@@ -11,6 +11,24 @@
 #define VALUE_CLEARED_UNDESIRED_UNUSABLE 0.8
 #define VALUE_CLEARED_OUTSIDE_UNUSABLE 0.1
 
+enum TargetState
+{
+    EMPTY, OCCUPIED, IRRELEVANT
+};
+
+struct ArrayInformation
+{
+    std::vector<std::vector<int>> usableAtomsPerXCIndex, unusableAtomsPerXCIndex, targetSitesPerXCIndex, parkingSitesPerXCIndex;
+    std::vector<int> bufferRows, bufferCols, dumpingIndicesAC;
+    bool vertical;
+
+    // Across channel dir will be abbreviated as XC, along channel as AC
+    unsigned int arraySizeXC, arraySizeAC, maxTonesXC, maxTonesAC, dumpingIndicesLow, dumpingIndicesHigh, 
+        firstNormalIndexXC, lastNormalIndexXCExcl, firstNormalIndexAC, lastNormalIndexACExcl, firstRelevantAC, lastRelevantACExcl;
+    double spacingXC, spacingAC;
+    int targetGapXC, targetGapAC, sortingChannelWidth;
+};
+
 std::optional<std::vector<ParallelMove>> sortLatticeGreedyParallel(
     py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>& stateArray, 
     size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd, 
@@ -18,15 +36,15 @@ std::optional<std::vector<ParallelMove>> sortLatticeGreedyParallel(
 
 std::optional<std::vector<ParallelMove>> sortLatticeByRowParallel(
     py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>& stateArray, 
-    size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd, 
-    py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>& targetGeometry);
+    const py::array_t<TargetState>& targetGeometry);
 std::optional<std::vector<ParallelMove>> fixLatticeByRowSortingDeficiencies(
-    py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &stateArray, 
-    size_t compZoneRowStart, size_t compZoneRowEnd, size_t compZoneColStart, size_t compZoneColEnd, 
-    py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &targetGeometry);
+    py::EigenDRef<Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>& stateArray, 
+    const py::array_t<TargetState>& targetGeometry);
 
 Eigen::Array<bool,Eigen::Dynamic,Eigen::Dynamic> generateMask(double distance, double spacingFraction = 1);
 Eigen::Array<unsigned int,Eigen::Dynamic,Eigen::Dynamic> generatePathway(size_t borderRows, size_t borderCols, 
     const py::EigenDRef<const Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> &occupancy,
     double distFromOcc = Config::getInstance().recommendedDistFromOccSites, 
     double distFromEmpty = Config::getInstance().recommendedDistFromEmptySites);
+std::optional<ArrayInformation> conductInitialAnalysis(ArrayAccessor& stateArray, 
+    pybind11::detail::unchecked_reference<TargetState, 2>& targetGeometry, std::shared_ptr<spdlog::logger> logger);

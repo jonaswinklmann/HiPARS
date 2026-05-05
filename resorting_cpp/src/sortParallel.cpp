@@ -716,8 +716,8 @@ bool ParallelMove::execute(ArrayAccessor& stateArray, std::shared_ptr<spdlog::lo
     return true;
 }
 
-bool ParallelMove::extendToUseAllTones(unsigned int stateArrayRows, unsigned int stateArrayCols,
-    std::shared_ptr<spdlog::logger> logger, bool considerSpacing)
+bool ParallelMove::extendToUseAllTones(unsigned int stateArrayRows, unsigned int stateArrayCols, std::shared_ptr<spdlog::logger> logger, 
+    bool considerSpacing, std::optional<std::vector<int>> bufferRows, std::optional<std::vector<int>> bufferCols)
 {
     if(Config::getInstance().alwaysGenerateAllAODTones)
     {
@@ -743,66 +743,109 @@ bool ParallelMove::extendToUseAllTones(unsigned int stateArrayRows, unsigned int
             requiredRowTones -= this->steps[0].rowSelection.size();
             requiredColTones -= this->steps[0].colSelection.size();
 
-            if(requiredRowTones > 0 || requiredColTones > 0)
+            if(requiredRowTones > 0)
             {
-                int rowDist = 1, colDist = 1;
-                if(considerSpacing)
+                if(!bufferRows.has_value())
                 {
-                    if(Config::getInstance().minDistFromOccSites > Config::getInstance().rowSpacing)
+                    int rowDist = 1;
+                    if(considerSpacing)
                     {
-                        rowDist = ceil(Config::getInstance().rowSpacing / Config::getInstance().minDistFromOccSites);
+                        if(Config::getInstance().minDistFromOccSites > Config::getInstance().rowSpacing)
+                        {
+                            rowDist = ceil(Config::getInstance().rowSpacing / Config::getInstance().minDistFromOccSites);
+                        }
                     }
+                    int minTone = -rowDist, maxTone = stateArrayRows - 1 + rowDist;
+                    for(const ParallelMove::Step& step : this->steps)
+                    {
+                        for(const auto& row : step.rowSelection)
+                        {
+                            if(row - rowDist < minTone)
+                            {
+                                minTone = row - rowDist;
+                            }
+                            if(row + rowDist > maxTone)
+                            {
+                                maxTone = row + rowDist;
+                            }
+                        }
+                    }
+                    // Add tones to move
+                    for(ParallelMove::Step& step : this->steps)
+                    {
+                        for(int i = 0; i < (requiredRowTones + 1) / 2; i++)
+                        {
+                            step.rowSelection.insert(step.rowSelection.begin(), minTone - i);
+                        }
+                        for(int i = 0; i < requiredRowTones / 2; i++)
+                        {
+                            step.rowSelection.push_back(maxTone + i);
+                        }
+                    }
+                }
+                else
+                {
+                    // Add tones to move
+                    for(ParallelMove::Step& step : this->steps)
+                    {
+                        for(int i = 0; i < requiredRowTones; i++)
+                        {
+                            step.rowSelection.push_back(bufferRows.value()[i]);
+                        }
+                        std::sort(step.rowSelection.begin(), step.rowSelection.end());
+                    }
+                }
+            }
+            if(requiredColTones > 0)
+            {
+                if(!bufferCols.has_value())
+                {
+                    int colDist = 1;
+                    if(considerSpacing)
+                    {
                     if(Config::getInstance().minDistFromOccSites > Config::getInstance().columnSpacing)
                     {
                         colDist = ceil(Config::getInstance().columnSpacing / Config::getInstance().minDistFromOccSites);
                     }
+                    }
+                    int minTone = -colDist, maxTone = stateArrayCols - 1 + colDist;
+                    for(const ParallelMove::Step& step : this->steps)
+                    {
+                        for(const auto& col : step.colSelection)
+                        {
+                            if(col - colDist < minTone)
+                            {
+                                minTone = col - colDist;
+                            }
+                            if(col + colDist > maxTone)
+                            {
+                                maxTone = col + colDist;
+                            }
+                        }
+                    }
+                    // Add tones to move
+                    for(ParallelMove::Step& step : this->steps)
+                    {
+                        for(int i = 0; i < (requiredColTones + 1) / 2; i++)
+                        {
+                            step.colSelection.insert(step.colSelection.begin(), minTone - i);
+                        }
+                        for(int i = 0; i < requiredColTones / 2; i++)
+                        {
+                            step.colSelection.push_back(maxTone + i);
+                        }
+                    }
                 }
-                int minRowTone = -rowDist, maxRowTone = stateArrayRows - 1 + rowDist;
-                int minColTone = -colDist, maxColTone = stateArrayCols - 1 + colDist;
-                for(const ParallelMove::Step& step : this->steps)
+                else
                 {
-                    for(const auto& row : step.rowSelection)
+                    // Add tones to move
+                    for(ParallelMove::Step& step : this->steps)
                     {
-                        if(row - rowDist < minRowTone)
+                        for(int i = 0; i < requiredColTones; i++)
                         {
-                            minRowTone = row - rowDist;
+                            step.colSelection.push_back(bufferCols.value()[i]);
                         }
-                        if(row + rowDist > maxRowTone)
-                        {
-                            maxRowTone = row + rowDist;
-                        }
-                    }
-                    for(const auto& col : step.colSelection)
-                    {
-                        if(col - colDist < minColTone)
-                        {
-                            minColTone = col - colDist;
-                        }
-                        if(col + colDist > maxColTone)
-                        {
-                            maxColTone = col + colDist;
-                        }
-                    }
-                }
-
-                // Add tones to move
-                for(ParallelMove::Step& step : this->steps)
-                {
-                    for(int i = 0; i < (requiredRowTones + 1) / 2; i++)
-                    {
-                        step.rowSelection.insert(step.rowSelection.begin(), minRowTone - i);
-                    }
-                    for(int i = 0; i < requiredRowTones / 2; i++)
-                    {
-                        step.rowSelection.push_back(maxRowTone + i);
-                    }
-                    for(int i = 0; i < (requiredColTones + 1) / 2; i++)
-                    {
-                        step.colSelection.insert(step.colSelection.begin(), minColTone - i);
-                    }
-                    for(int i = 0; i < requiredColTones / 2; i++)
-                    {
-                        step.colSelection.push_back(maxColTone + i);
+                        std::sort(step.colSelection.begin(), step.colSelection.end());
                     }
                 }
             }
